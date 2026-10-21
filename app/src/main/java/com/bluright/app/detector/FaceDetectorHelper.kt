@@ -22,7 +22,13 @@ class FaceDetectorHelper(
     private val listener: DetectorListener
 ) {
     interface DetectorListener {
-        fun onResults(faces: List<DetectedFace>, imageWidth: Int, imageHeight: Int, inferenceTimeMs: Long)
+        fun onResults(
+            faces: List<DetectedFace>,
+            imageWidth: Int,
+            imageHeight: Int,
+            inferenceTimeMs: Long,
+            frameTimestampMs: Long = 0L
+        )
         fun onError(error: String)
     }
 
@@ -78,13 +84,24 @@ class FaceDetectorHelper(
     @Synchronized
     fun detectAsync(mpImage: MPImage, frameTimestampMs: Long) {
         if (isClosed) return
-        val detector = faceDetector ?: return
+        val detector = faceDetector
+        if (detector == null) {
+            listener.onError("FaceDetector is not initialized")
+            return
+        }
 
-        // LIVE_STREAM mode requires monotonically strictly increasing timestamps
-        val monotonicTimestamp = if (frameTimestampMs <= lastFrameTimestampMs) {
+        // Validate frame dimensions to prevent native C++ engine crashes
+        if (mpImage.width <= 0 || mpImage.height <= 0) {
+            listener.onError("Invalid frame dimensions: ${mpImage.width}x${mpImage.height}")
+            return
+        }
+
+        // LIVE_STREAM mode requires strictly positive, monotonically strictly increasing timestamps
+        val safeTimestamp = if (frameTimestampMs <= 0L) SystemClock.uptimeMillis() else frameTimestampMs
+        val monotonicTimestamp = if (safeTimestamp <= lastFrameTimestampMs) {
             lastFrameTimestampMs + 1
         } else {
-            frameTimestampMs
+            safeTimestamp
         }
         lastFrameTimestampMs = monotonicTimestamp
 
@@ -98,13 +115,14 @@ class FaceDetectorHelper(
 
     private fun handleDetectionResult(result: FaceDetectorResult, inputImage: MPImage) {
         val now = SystemClock.uptimeMillis()
-        val inferenceTimeMs = (now - result.timestampMs()).coerceAtLeast(0L)
+        val resultTimestamp = result.timestampMs()
+        val inferenceTimeMs = (now - resultTimestamp).coerceAtLeast(0L)
 
         val imageW = inputImage.width.toFloat()
         val imageH = inputImage.height.toFloat()
 
         if (imageW <= 0f || imageH <= 0f) {
-            listener.onResults(emptyList(), inputImage.width, inputImage.height, inferenceTimeMs)
+            listener.onResults(emptyList(), inputImage.width, inputImage.height, inferenceTimeMs, resultTimestamp)
             return
         }
 
@@ -136,7 +154,7 @@ class FaceDetectorHelper(
             }
         }
 
-        listener.onResults(detectedFaces, inputImage.width, inputImage.height, inferenceTimeMs)
+        listener.onResults(detectedFaces, inputImage.width, inputImage.height, inferenceTimeMs, resultTimestamp)
     }
 
     /**

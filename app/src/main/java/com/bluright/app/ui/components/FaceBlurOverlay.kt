@@ -42,6 +42,7 @@ fun FaceBlurOverlay(
     faces: List<DetectedFace>,
     frameAspectRatio: Float,
     blurStyle: BlurStyle,
+    isFailClosedBlackoutActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -73,9 +74,73 @@ fun FaceBlurOverlay(
         }
 
         Canvas(modifier = Modifier.fillMaxSize()) {
+            if (isFailClosedBlackoutActive && faces.isEmpty()) {
+                // Render fail-closed blackout shield over preview
+                drawRect(
+                    color = Color(0xF2050811),
+                    topLeft = Offset.Zero,
+                    size = size
+                )
+
+                val bannerW = (size.width * 0.90f).coerceAtMost(800f)
+                val bannerH = 130f
+                val bannerLeft = (size.width - bannerW) / 2f
+                val bannerTop = (size.height - bannerH) / 2f
+
+                drawRoundRect(
+                    color = NavyDarkBackground.copy(alpha = 0.95f),
+                    topLeft = Offset(bannerLeft, bannerTop),
+                    size = Size(bannerW, bannerH),
+                    cornerRadius = CornerRadius(16f, 16f),
+                    style = Fill
+                )
+                drawRoundRect(
+                    color = CyanPrimary,
+                    topLeft = Offset(bannerLeft, bannerTop),
+                    size = Size(bannerW, bannerH),
+                    cornerRadius = CornerRadius(16f, 16f),
+                    style = Stroke(width = 2.5f)
+                )
+
+                val headerStyle = TextStyle(
+                    color = CyanPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                val subStyle = TextStyle(
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Normal
+                )
+
+                val t1 = textMeasurer.measure("FAIL-CLOSED PRIVACY SHIELD", headerStyle)
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = "FAIL-CLOSED PRIVACY SHIELD",
+                    style = headerStyle,
+                    topLeft = Offset(bannerLeft + (bannerW - t1.size.width) / 2f, bannerTop + 20f)
+                )
+
+                val t2 = textMeasurer.measure("OPT-OUT ACTIVE // COVERAGE UNVERIFIED", subStyle)
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = "OPT-OUT ACTIVE // COVERAGE UNVERIFIED",
+                    style = subStyle,
+                    topLeft = Offset(bannerLeft + (bannerW - t2.size.width) / 2f, bannerTop + 58f)
+                )
+
+                val t3 = textMeasurer.measure("0 PIXELS LEAKED IN EXPORT", subStyle)
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = "0 PIXELS LEAKED IN EXPORT",
+                    style = subStyle,
+                    topLeft = Offset(bannerLeft + (bannerW - t3.size.width) / 2f, bannerTop + 88f)
+                )
+                return@Canvas
+            }
             for (face in faces) {
-                // Expand the bounding box by 15-20% to cover hair, jawline, ears
-                val expanded = face.expanded(horizontalPadding = 0.14f, verticalPadding = 0.20f)
+                // Adaptive safety expansion (15-25%) identical to video export pipeline
+                val expanded = face.expandedAdaptive()
 
                 val boxLeft = expanded.normLeft * scaledW + offX
                 val boxTop = expanded.normTop * scaledH + offY

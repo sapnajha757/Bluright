@@ -52,6 +52,67 @@ data class DetectedFace(
     }
 
     /**
+     * Expands the bounding box using canonical adaptive margins (15% - 25%)
+     * based on detection confidence and boundary proximity.
+     * Guarantees 100% consistent masking boundaries between live preview and exported video.
+     */
+    fun expandedAdaptive(): DetectedFace {
+        val touchesEdge = normLeft <= 0.05f || normTop <= 0.05f || normRight >= 0.95f || normBottom >= 0.95f
+        val isLowConfidence = confidence < 0.70f
+        val margin = when {
+            touchesEdge -> 0.25f // 25% extra safety margin when touching border
+            isLowConfidence -> 0.20f // 20% margin for marginal confidence
+            else -> 0.15f // Baseline 15% conservative margin
+        }
+        val extraW = normWidth * margin
+        val extraH = normHeight * margin
+        return copy(
+            normLeft = (normLeft - extraW).coerceAtLeast(0f),
+            normTop = (normTop - extraH).coerceAtLeast(0f),
+            normRight = (normRight + extraW).coerceAtMost(1f),
+            normBottom = (normBottom + extraH).coerceAtMost(1f)
+        )
+    }
+
+    /**
+     * Transforms normalized coordinates under a clockwise rotation (90, 180, 270 degrees).
+     */
+    fun rotated(rotationDegrees: Int): DetectedFace {
+        val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        return when (normalizedRotation) {
+            90 -> copy(
+                normLeft = 1f - normBottom,
+                normTop = normLeft,
+                normRight = 1f - normTop,
+                normBottom = normRight
+            )
+            180 -> copy(
+                normLeft = 1f - normRight,
+                normTop = 1f - normBottom,
+                normRight = 1f - normLeft,
+                normBottom = 1f - normTop
+            )
+            270 -> copy(
+                normLeft = normTop,
+                normTop = 1f - normRight,
+                normRight = normBottom,
+                normBottom = 1f - normLeft
+            )
+            else -> this
+        }
+    }
+
+    /**
+     * Mirrors the bounding box horizontally across the vertical centerline (for front-facing selfie camera).
+     */
+    fun mirroredHorizontally(): DetectedFace {
+        return copy(
+            normLeft = (1f - normRight).coerceIn(0f, 1f),
+            normRight = (1f - normLeft).coerceIn(0f, 1f)
+        )
+    }
+
+    /**
      * Linear interpolation (LERP) between this box and a previous box
      * to eliminate jitter across consecutive video frames.
      */

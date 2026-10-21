@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -37,6 +38,7 @@ import com.bluright.app.ui.theme.CyanPrimary
 import com.bluright.app.ui.theme.NavyCard
 import com.bluright.app.ui.theme.NavyDarkBackground
 import com.bluright.app.ui.theme.NavyDarkSurface
+import com.bluright.app.ui.theme.PrivacyDanger
 import com.bluright.app.ui.theme.TealAccent
 import com.bluright.app.ui.theme.TextMuted
 import com.bluright.app.ui.theme.TextPrimary
@@ -46,9 +48,12 @@ import com.bluright.app.ui.theme.TextSecondary
 fun CameraControls(
     currentStyle: BlurStyle,
     currentLens: CameraLens,
+    isRecording: Boolean = false,
+    recordingDurationMs: Long = 0L,
     onStyleSelected: (BlurStyle) -> Unit,
     onToggleLens: () -> Unit,
     onShutterClick: () -> Unit,
+    onToggleRecording: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -101,7 +106,36 @@ fun CameraControls(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Center Action Row (Lens switch, Shutter, Recording Info)
+        if (isRecording) {
+            val totalSeconds = (recordingDurationMs / 1000).toInt()
+            val mins = totalSeconds / 60
+            val secs = totalSeconds % 60
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(PrivacyDanger.copy(alpha = 0.2f))
+                    .border(1.dp, PrivacyDanger, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(PrivacyDanger)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "REC %02d:%02d • PRIVACY BAKED".format(mins, secs),
+                    color = PrivacyDanger,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        // Center Action Row (Lens switch, Shutter, Recording Toggle)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -130,39 +164,49 @@ fun CameraControls(
                 modifier = Modifier
                     .size(76.dp)
                     .clip(CircleShape)
-                    .border(3.dp, CyanPrimary, CircleShape)
+                    .border(3.dp, if (isRecording) PrivacyDanger else CyanPrimary, CircleShape)
                     .padding(6.dp)
                     .clip(CircleShape)
                     .background(
                         Brush.radialGradient(
-                            colors = listOf(CyanPrimary, CyanAccent)
+                            colors = if (isRecording) {
+                                listOf(PrivacyDanger, Color(0xFFB71C1C))
+                            } else {
+                                listOf(CyanPrimary, CyanAccent)
+                            }
                         )
                     )
-                    .clickable { onShutterClick() },
+                    .clickable {
+                        if (isRecording) onToggleRecording() else onShutterClick()
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = "Bluright Shutter",
+                    imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Shield,
+                    contentDescription = if (isRecording) "Stop Recording" else "Bluright Shutter",
                     tint = NavyDarkBackground,
                     modifier = Modifier.size(34.dp)
                 )
             }
 
-            // Phase 2 Video Recording Placeholder
+            // Real Privacy Video Recording Toggle Button
             Box(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(CircleShape)
-                    .background(NavyCard)
-                    .border(1.dp, NavyCard, CircleShape)
-                    .clickable { onShutterClick() },
+                    .background(if (isRecording) PrivacyDanger.copy(alpha = 0.25f) else NavyCard)
+                    .border(
+                        1.dp,
+                        if (isRecording) PrivacyDanger else TealAccent.copy(alpha = 0.4f),
+                        CircleShape
+                    )
+                    .clickable { onToggleRecording() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Videocam,
-                    contentDescription = "Phase 2 Recording",
-                    tint = TextMuted,
+                    imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Videocam,
+                    contentDescription = if (isRecording) "Stop Video Recording" else "Record Privacy Video",
+                    tint = if (isRecording) PrivacyDanger else CyanPrimary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -170,9 +214,9 @@ fun CameraControls(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Phase distinction caption
+        // Phase 3 Caption
         Text(
-            text = "Phase 1: Real-time on-device preview blur. Protected video encoding in Phase 2.",
+            text = "Phase 3: Real-time privacy video recording with signed Keystore manifest.",
             color = TextMuted,
             fontSize = 10.sp,
             fontWeight = FontWeight.Normal

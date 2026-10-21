@@ -10,8 +10,29 @@
     <uses-feature
         android:name="android.hardware.camera.front"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
 
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Bluetooth permissions for API 31+ (Android 12+) -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Legacy Bluetooth permissions for API <= 30 -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
 
     <application
         android:allowBackup="true"
@@ -31,6 +52,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".ble.BleAutomationReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.bluright.app.ACTION_START_BEACON" />
+                <action android:name="com.bluright.app.ACTION_STOP_BEACON" />
+                <action android:name="com.bluright.app.ACTION_START_RECORDING" />
+                <action android:name="com.bluright.app.ACTION_STOP_RECORDING" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

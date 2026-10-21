@@ -2,6 +2,7 @@ package com.bluright.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.bluright.app.ui.components.PermissionGate
@@ -64,6 +66,7 @@ fun BlurightApp(
     shouldShowRationale: () -> Boolean,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var hasCameraPermission by remember { mutableStateOf(hasPermissionInitially) }
     var hasRequestedPermission by remember { mutableStateOf(false) }
     var isPermanentlyDenied by remember { mutableStateOf(false) }
@@ -78,10 +81,41 @@ fun BlurightApp(
         }
     }
 
-    // Auto-prompt permission on first launch if not already granted
+    // BLE Nearby Devices permission launcher for Android 12+ (API 31+)
+    val blePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        // BLE permissions response handled reactively by scanner and advertiser
+    }
+
+    // Auto-prompt camera permission on first launch if not already granted
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    // Prompt BLE permissions on Android 12+ once camera permission is secured
+    LaunchedEffect(hasCameraPermission) {
+        if (hasCameraPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val hasScan = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasAdv = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasScan || !hasAdv) {
+                blePermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_ADVERTISE,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    )
+                )
+            }
         }
     }
 

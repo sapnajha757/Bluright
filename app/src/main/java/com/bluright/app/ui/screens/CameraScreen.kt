@@ -1,6 +1,10 @@
 package com.bluright.app.ui.screens
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import androidx.camera.core.Camera
@@ -32,13 +36,28 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import com.bluright.app.analyzer.FaceBlurImageAnalyzer
+import com.bluright.app.ble.BleAdvertiserState
+import com.bluright.app.ble.BleOptOutAdvertiser
+import com.bluright.app.ble.BleOptOutScanner
+import com.bluright.app.ble.BleScannerState
+import com.bluright.app.export.ExportState
+import com.bluright.app.export.PrivacyExportCoordinator
 import com.bluright.app.model.BlurStyle
 import com.bluright.app.model.CameraLens
 import com.bluright.app.model.DetectionState
+import com.bluright.app.privacy.FaceAssociationEngine
 import com.bluright.app.ui.components.CameraControls
+import com.bluright.app.ui.components.ExportSuccessDialog
 import com.bluright.app.ui.components.FaceBlurOverlay
+import com.bluright.app.ui.components.OptOutBroadcastDialog
+import com.bluright.app.ui.components.PrivacyDecisionBadge
 import com.bluright.app.ui.components.PrivacyModeHeader
 import com.bluright.app.ui.components.PrivacyStatusBadge
 import com.bluright.app.ui.theme.NavyDarkBackground
@@ -60,6 +79,33 @@ fun CameraScreen(
     var blurStyle by remember { mutableStateOf(BlurStyle.PIXELATE) }
     var isTorchOn by remember { mutableStateOf(false) }
     var activeCamera by remember { mutableStateOf<Camera?>(null) }
+    var showBroadcastDialog by remember { mutableStateOf(false) }
+
+    // BLE Opt-Out Scanner and Broadcaster
+    val bleScanner = remember { BleOptOutScanner(context.applicationContext, coroutineScope) }
+    val bleAdvertiser = remember { BleOptOutAdvertiser(context.applicationContext, coroutineScope) }
+    val associationEngine = remember { FaceAssociationEngine() }
+    val exportCoordinator = remember { PrivacyExportCoordinator(context.applicationContext, coroutineScope) }
+
+    val bleScannerState by bleScanner.scannerState.collectAsState()
+    val bleAdvertiserState by bleAdvertiser.advertiserState.collectAsState()
+    val exportState by exportCoordinator.exportState.collectAsState()
+
+    // Start/Stop BLE Scanner with screen lifecycle and auto-resume on ON_RESUME
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                bleScanner.startScanning()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        bleScanner.startScanning()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            bleScanner.cleanup()
+            bleAdvertiser.cleanup()
+        }
+    }
 
     // Analyzer is remembered across recompositions
     val analyzer = remember {
@@ -162,10 +208,31 @@ fun CameraScreen(
                 else -> emptyList()
             }
 
+            // Real-time Privacy Decision evaluating detected faces against BLE opt-out signals
+            val privacyDecision = remember(faces, bleScannerState) {
+                associationEngine.evaluatePrivacyDecision(faces, bleScannerState)
+            }
+
+            // Stream frames from analyzer to Privacy Video Export Coordinator
+            LaunchedEffect(analyzer, bleScannerState, blurStyle) {
+                analyzer.onFrameAvailable = { bitmap, detectedFaces ->
+                    if (exportCoordinator.isRecording) {
+                        val frameDecision = associationEngine.evaluatePrivacyDecision(detectedFaces, bleScanner.scannerState.value)
+                        exportCoordinator.processFrame(bitmap, detectedFaces, frameDecision)
+                    }
+                }
+                analyzer.onFrameError = { error ->
+                    if (exportCoordinator.isRecording) {
+                        exportCoordinator.recordDiscardedFrame(error)
+                    }
+                }
+            }
+
             FaceBlurOverlay(
                 faces = faces,
                 frameAspectRatio = frameAspectRatio,
                 blurStyle = blurStyle,
+                isFailClosedBlackoutActive = privacyDecision.shouldApplyFailClosedBlackoutIfNoFaces,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -173,6 +240,7 @@ fun CameraScreen(
             PrivacyModeHeader(
                 currentLens = currentLens,
                 isTorchOn = isTorchOn,
+                isBroadcasting = bleAdvertiserState is BleAdvertiserState.Advertising,
                 onToggleLens = {
                     currentLens = currentLens.toggle()
                 },
@@ -185,36 +253,90 @@ fun CameraScreen(
                         Toast.makeText(context, "Torch not supported on this lens", Toast.LENGTH_SHORT).show()
                     }
                 },
+                onOpenBroadcastDialog = {
+                    showBroadcastDialog = true
+                },
                 modifier = Modifier.align(Alignment.TopCenter)
             )
 
-            // 4. Floating Status Badge (Under Top Header)
-            Box(
+            // 4. Floating Status Badges (Under Top Header)
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 92.dp),
-                contentAlignment = Alignment.Center
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 PrivacyStatusBadge(state = detectionState)
+                Spacer(modifier = Modifier.height(6.dp))
+                PrivacyDecisionBadge(
+                    decision = privacyDecision,
+                    onClick = { showBroadcastDialog = true }
+                )
             }
 
             // 5. Bottom Controls Bar
+            val isRecording = exportState is ExportState.Recording
+            val recordingDurationMs = (exportState as? ExportState.Recording)?.durationMs ?: 0L
+
             CameraControls(
                 currentStyle = blurStyle,
                 currentLens = currentLens,
+                isRecording = isRecording,
+                recordingDurationMs = recordingDurationMs,
                 onStyleSelected = { blurStyle = it },
                 onToggleLens = {
                     currentLens = currentLens.toggle()
                 },
                 onShutterClick = {
-                    coroutineScope.launch {
-                        snackbarHostState.showSnackbar(
-                            message = "Live on-device privacy blur active. Verifiable video recording pipeline scheduled for Phase 2."
-                        )
+                    if (isRecording) {
+                        exportCoordinator.stopRecording()
+                    } else {
+                        exportCoordinator.startRecording(blurStyle)
+                    }
+                },
+                onToggleRecording = {
+                    if (isRecording) {
+                        exportCoordinator.stopRecording()
+                    } else {
+                        exportCoordinator.startRecording(blurStyle)
                     }
                 },
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
+
+            // 6. BLE Opt-Out Broadcaster / Transmitter Modal
+            if (showBroadcastDialog) {
+                OptOutBroadcastDialog(
+                    state = bleAdvertiserState,
+                    onToggleAdvertising = { start ->
+                        if (start) {
+                            bleAdvertiser.startAdvertising()
+                        } else {
+                            bleAdvertiser.stopAdvertising()
+                        }
+                    },
+                    onDismiss = { showBroadcastDialog = false }
+                )
+            }
+
+            // 7. Signed Privacy Export Success Modal
+            val success = exportState as? ExportState.ExportSuccess
+            if (success != null) {
+                ExportSuccessDialog(
+                    videoFile = success.videoFile,
+                    manifestFile = success.manifestFile,
+                    manifest = success.manifest,
+                    initialVerification = success.verificationResult,
+                    onDismiss = { exportCoordinator.dismissSuccess() }
+                )
+            }
+
+            LaunchedEffect(exportState) {
+                val err = exportState as? ExportState.Error
+                if (err != null) {
+                    snackbarHostState.showSnackbar("Export Error: ${err.message}")
+                }
+            }
         }
     }
 }

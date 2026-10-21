@@ -43,6 +43,18 @@ class FaceBlurImageAnalyzer(
     @Volatile
     var isFrontCamera: Boolean = false
 
+    @Volatile
+    var onFrameAvailable: ((Bitmap, List<DetectedFace>) -> Unit)? = null
+
+    @Volatile
+    var onFrameError: ((String) -> Unit)? = null
+
+    @Volatile
+    private var latestUprightBitmap: Bitmap? = null
+
+    // Exact frame matching buffer: maps monotonic timestamp to upright frame Bitmap
+    private val pendingFrames = java.util.concurrent.ConcurrentHashMap<Long, Bitmap>()
+
     private val isBusy = AtomicBoolean(false)
     private var lastAnalyzedTimeMs = 0L
     private var lastResultTimeMs = SystemClock.uptimeMillis()
@@ -76,8 +88,9 @@ class FaceBlurImageAnalyzer(
                 val elapsedSinceLastResult = SystemClock.uptimeMillis() - lastResultTimeMs
                 if (elapsedSinceLastResult > STALE_TIMEOUT_MS) {
                     val currentState = _detectionState.value
-                    if (currentState !is DetectionState.Unavailable) {
+                    if (currentState !is DetectionState.Unavailable && currentState !is DetectionState.Stale) {
                         _detectionState.value = DetectionState.Stale(elapsedSinceLastResult)
+                        onFrameError?.invoke("DETECTOR_WATCHDOG_STALE_${elapsedSinceLastResult}MS")
                     }
                 }
             }
@@ -87,6 +100,13 @@ class FaceBlurImageAnalyzer(
     @OptIn(ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
         val now = SystemClock.uptimeMillis()
+
+        // Guard against invalid image dimensions
+        if (imageProxy.width <= 0 || imageProxy.height <= 0) {
+            imageProxy.close()
+            onFrameError?.invoke("INVALID_FRAME_DIMENSIONS_${imageProxy.width}x${imageProxy.height}")
+            return
+        }
 
         // Rate limit analysis to avoid overloading device CPU (target ~25-30 FPS)
         if (now - lastAnalyzedTimeMs < MIN_FRAME_INTERVAL_MS || isBusy.get()) {
@@ -127,10 +147,15 @@ class FaceBlurImageAnalyzer(
                     }
 
                     val uprightBitmap = if (rotationDegrees != 0 || isFrontCamera) {
-                        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                        bitmap.recycle() // Recycle original CameraX bitmap to eliminate memory churn
+                        rotated
                     } else {
                         bitmap
                     }
+                    latestUprightBitmap = uprightBitmap
+                    pendingFrames[now] = uprightBitmap
+                    pruneStalePendingFrames(now)
 
                     // Update frame aspect ratio for Compose overlay mapping
                     val uprightW = uprightBitmap.width.toFloat()
@@ -143,6 +168,7 @@ class FaceBlurImageAnalyzer(
                     detectorHelper.detectAsync(mpImage, now)
                 } catch (e: Exception) {
                     Log.e(TAG, "Frame preprocessing error: ${e.message}", e)
+                    pendingFrames.remove(now)
                 } finally {
                     isBusy.set(false)
                 }
@@ -154,14 +180,30 @@ class FaceBlurImageAnalyzer(
         }
     }
 
+    private fun pruneStalePendingFrames(currentTimeMs: Long) {
+        val staleThreshold = currentTimeMs - 1000L
+        val iterator = pendingFrames.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.key < staleThreshold) {
+                iterator.remove()
+            }
+        }
+    }
+
     override fun onResults(
         faces: List<DetectedFace>,
         imageWidth: Int,
         imageHeight: Int,
-        inferenceTimeMs: Long
+        inferenceTimeMs: Long,
+        frameTimestampMs: Long
     ) {
         val now = SystemClock.uptimeMillis()
         lastResultTimeMs = now
+
+        // Retrieve the exact matching upright frame for this detection inference
+        val frameBitmap = (if (frameTimestampMs > 0L) pendingFrames.remove(frameTimestampMs) else null)
+            ?: latestUprightBitmap
 
         if (faces.isNotEmpty()) {
             // Smooth detected faces against previously cached faces to eliminate jitter
@@ -196,30 +238,39 @@ class FaceBlurImageAnalyzer(
                 inferenceTimeMs = inferenceTimeMs,
                 fps = currentFps
             )
+
+            frameBitmap?.let { bmp ->
+                if (!bmp.isRecycled) {
+                    onFrameAvailable?.invoke(bmp, smoothedFaces)
+                }
+            }
         } else {
-            // If faces drop for 1-2 frames, apply grace period to prevent distracting flicker
-            if (now < cachedFacesExpiryMs && cachedSmoothedFaces.isNotEmpty()) {
-                _detectionState.value = DetectionState.FaceDetected(
-                    faces = cachedSmoothedFaces,
-                    inferenceTimeMs = inferenceTimeMs,
-                    fps = currentFps
-                )
-            } else {
-                cachedSmoothedFaces = emptyList()
-                _detectionState.value = DetectionState.ZeroFaces(
-                    inferenceTimeMs = inferenceTimeMs,
-                    fps = currentFps
-                )
+            // Under fail-closed privacy policy, stale bounding boxes are NEVER passed to video export
+            cachedSmoothedFaces = emptyList()
+            _detectionState.value = DetectionState.ZeroFaces(
+                inferenceTimeMs = inferenceTimeMs,
+                fps = currentFps
+            )
+            frameBitmap?.let { bmp ->
+                if (!bmp.isRecycled) {
+                    onFrameAvailable?.invoke(bmp, emptyList())
+                }
             }
         }
     }
 
     override fun onError(error: String) {
         Log.e(TAG, "Detection error reported: $error")
+        pendingFrames.clear()
         _detectionState.value = DetectionState.Unavailable(error)
+        onFrameError?.invoke(error)
     }
 
     fun shutdown() {
+        onFrameAvailable = null
+        onFrameError = null
+        latestUprightBitmap = null
+        pendingFrames.clear()
         watchdogJob?.cancel()
         detectorHelper.close()
     }

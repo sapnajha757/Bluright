@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Shield
@@ -34,6 +35,7 @@ import com.bluright.app.model.CameraLens
 import com.bluright.app.ui.theme.CyanPrimary
 import com.bluright.app.ui.theme.NavyCard
 import com.bluright.app.ui.theme.NavyDarkSurface
+import com.bluright.app.ui.theme.PrivacySafe
 import com.bluright.app.ui.theme.TealAccent
 import com.bluright.app.ui.theme.TextMuted
 import com.bluright.app.ui.theme.TextPrimary
@@ -43,8 +45,10 @@ import com.bluright.app.ui.theme.TextSecondary
 fun PrivacyModeHeader(
     currentLens: CameraLens,
     isTorchOn: Boolean,
+    isBroadcasting: Boolean,
     onToggleLens: () -> Unit,
     onToggleTorch: () -> Unit,
+    onOpenBroadcastDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -104,8 +108,32 @@ fun PrivacyModeHeader(
                 }
             }
 
-            // Top action buttons (Lens switch, Torch)
+            // Top action buttons (Transmitter, Lens switch, Torch)
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Opt-Out Beacon Transmitter Modal Button
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(NavyCard.copy(alpha = 0.85f))
+                        .border(
+                            1.dp,
+                            if (isBroadcasting) PrivacySafe else TealAccent.copy(alpha = 0.4f),
+                            CircleShape
+                        )
+                        .clickable { onOpenBroadcastDialog() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CellTower,
+                        contentDescription = "Opt-Out Beacon Settings",
+                        tint = if (isBroadcasting) PrivacySafe else CyanPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
                 // Torch toggle (only applicable to back camera)
                 if (currentLens == CameraLens.BACK) {
                     Box(
