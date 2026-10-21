@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Bluright</string>
+    <string name="tagline">The Right to Blur</string>
+    <string name="camera_permission_title">Camera Permission Required</string>
+    <string name="camera_permission_description">Bluright needs access to your camera to detect faces and protect privacy in real-time. All processing occurs on-device; no images or video are ever transmitted to the cloud.</string>
+    <string name="grant_permission">Grant Camera Permission</string>
+    <string name="open_settings">Open App Settings</string>
+    <string name="permission_denied_permanently">Camera permission was denied. Please open system settings to grant camera permission for Bluright.</string>
+    <string name="status_scanning">SCANNING</string>
+    <string name="status_face_detected">FACE DETECTED</string>
+    <string name="status_unavailable">DETECTION UNAVAILABLE</string>
+    <string name="status_safe">SAFE — ZERO FACES IN FRAME</string>
+    <string name="privacy_mode_active">REAL-TIME BLUR ACTIVE</string>
+    <string name="preview_notice">Live preview blur overlay active. Recording pipeline in Phase 2.</string>
+</resources>

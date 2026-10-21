@@ -1,0 +1,13 @@
+<resources>
+    <color name="navy_background">#070D1E</color>
+    <color name="navy_surface">#0D1B2A</color>
+    <color name="navy_surface_elevated">#1B263B</color>
+    <color name="cyan_accent">#00E5FF</color>
+    <color name="teal_accent">#5BC0BE</color>
+    <color name="cyan_primary">#00B4D8</color>
+    <color name="privacy_safe">#06D6A0</color>
+    <color name="privacy_warning">#FFB703</color>
+    <color name="privacy_danger">#FF3366</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#A0AEC0</color>
+</resources>
