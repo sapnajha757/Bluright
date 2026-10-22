@@ -12,13 +12,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import android.net.Uri
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -27,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,6 +47,7 @@ import androidx.compose.ui.window.Dialog
 import com.bluright.app.crypto.ManifestVerificationResult
 import com.bluright.app.crypto.PrivacyManifest
 import com.bluright.app.crypto.PrivacyManifestSigner
+import com.bluright.app.export.GalleryExportHelper
 import com.bluright.app.ui.theme.CyanAccent
 import com.bluright.app.ui.theme.CyanPrimary
 import com.bluright.app.ui.theme.NavyCard
@@ -65,8 +71,19 @@ fun ExportSuccessDialog(
     initialVerification: ManifestVerificationResult,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var verificationResult by remember { mutableStateOf(initialVerification) }
     var isVerifying by remember { mutableStateOf(false) }
+    var galleryUri by remember { mutableStateOf<Uri?>(null) }
+    var isSavedToGallery by remember { mutableStateOf(false) }
+
+    LaunchedEffect(videoFile) {
+        val uri = GalleryExportHelper.saveToGallery(context, videoFile)
+        if (uri != null) {
+            galleryUri = uri
+            isSavedToGallery = true
+        }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -236,6 +253,34 @@ fun ExportSuccessDialog(
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // Gallery Status Banner
+            if (isSavedToGallery) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(TealAccent.copy(alpha = 0.15f))
+                        .border(1.dp, TealAccent.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = TealAccent,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Saved to Phone Gallery (Movies/Bluright)",
+                        color = TealAccent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
             // Honest Disclaimer
             Box(
                 modifier = Modifier
@@ -254,7 +299,61 @@ fun ExportSuccessDialog(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Buttons
+            // Action Buttons: Play Video & Share
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = {
+                        GalleryExportHelper.playVideo(context, videoFile, galleryUri)
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = NavyDarkBackground,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Play Video",
+                        color = NavyDarkBackground,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        GalleryExportHelper.shareVideo(context, videoFile, galleryUri)
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = NavyCard),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        tint = CyanPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Share",
+                        color = CyanPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Secondary Buttons: Re-verify & Done
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -270,28 +369,28 @@ fun ExportSuccessDialog(
                         isVerifying = false
                     },
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = NavyCard),
+                    colors = ButtonDefaults.buttonColors(containerColor = NavyDarkBackground),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
                         text = if (isVerifying) "Verifying..." else "Re-verify",
-                        color = CyanPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
 
                 Button(
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary),
+                    colors = ButtonDefaults.buttonColors(containerColor = NavyDarkBackground),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
-                        text = "Done",
-                        color = NavyDarkBackground,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        text = "Close",
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
