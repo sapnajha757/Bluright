@@ -277,7 +277,16 @@ fun CameraScreen(
                 Spacer(modifier = Modifier.height(6.dp))
                 PrivacyDecisionBadge(
                     decision = privacyDecision,
-                    onClick = { showBroadcastDialog = true }
+                    onClick = {
+                        if (privacyDecision.isOptOutActive) {
+                            bleAdvertiser.stopAdvertising()
+                            bleScanner.clearObservations()
+                            associationEngine.resetSession()
+                            exportCoordinator.resetSession()
+                        } else {
+                            showBroadcastDialog = true
+                        }
+                    }
                 )
             }
 
@@ -319,6 +328,9 @@ fun CameraScreen(
                             bleAdvertiser.startAdvertising()
                         } else {
                             bleAdvertiser.stopAdvertising()
+                            bleScanner.clearObservations()
+                            associationEngine.resetSession()
+                            exportCoordinator.resetSession()
                         }
                     },
                     onDismiss = { showBroadcastDialog = false }
