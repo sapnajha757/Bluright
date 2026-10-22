@@ -296,6 +296,7 @@ class PrivacyExportCoordinator(
     }
 
     fun dismissSuccess() {
+        _hasObservedOptOutInSession.value = false
         _exportState.value = ExportState.Idle
     }
 

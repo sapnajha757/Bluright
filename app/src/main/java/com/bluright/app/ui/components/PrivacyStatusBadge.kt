@@ -43,7 +43,7 @@ import com.bluright.app.ui.theme.TextPrimary
 @Composable
 fun PrivacyStatusBadge(
     state: DetectionState,
-    maskedFacesCount: Int = -1,
+    maskedFacesCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -60,7 +60,7 @@ fun PrivacyStatusBadge(
     val (badgeText, badgeColor, icon, detailText) = when (state) {
         is DetectionState.FaceDetected -> {
             val totalCount = state.faces.size
-            val effectiveMasked = if (maskedFacesCount >= 0) maskedFacesCount else totalCount
+            val effectiveMasked = maskedFacesCount.coerceAtLeast(0)
             val label = when {
                 effectiveMasked > 0 -> if (effectiveMasked == 1) "1 FACE MASKED" else "$effectiveMasked FACES MASKED"
                 totalCount == 1 -> "1 FACE DETECTED • CLEAR"

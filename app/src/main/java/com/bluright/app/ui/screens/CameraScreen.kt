@@ -55,6 +55,7 @@ import com.bluright.app.model.CameraLens
 import com.bluright.app.model.DetectionState
 import com.bluright.app.model.PrivacyMode
 import com.bluright.app.privacy.FaceAssociationEngine
+import com.bluright.app.privacy.PrivacyDecision
 import com.bluright.app.privacy.PrivacyPolicy
 import com.bluright.app.ui.components.CameraControls
 import com.bluright.app.ui.components.ExportSuccessDialog
@@ -237,6 +238,35 @@ fun CameraScreen(
                 if (facesToMask.isEmpty()) faces else faces.filterNot { masked -> facesToMask.any { it.id == masked.id } }
             }
 
+            // Diagnostic logging for preview masking decisions (privacy-safe: no PII or raw BLE IDs)
+            LaunchedEffect(faces, privacyDecision, privacyMode, isSessionStickyActive, facesToMask) {
+                val bleCount = when (val s = bleScannerState) {
+                    is BleScannerState.Scanning -> s.observations.size
+                    else -> 0
+                }
+                val decisionReason = when (privacyDecision) {
+                    is PrivacyDecision.AmbiguousConservativeMask -> privacyDecision.reason
+                    is PrivacyDecision.BleUnavailable -> privacyDecision.reason
+                    is PrivacyDecision.AssociationSupported -> "faceId=${privacyDecision.faceId}, conf=${(privacyDecision.confidenceScore * 100).toInt()}%"
+                    is PrivacyDecision.OptOutSignalHold -> "hold_elapsed=${privacyDecision.elapsedSinceLossMs}ms"
+                    is PrivacyDecision.OptOutDetectedUnverified -> "rssi=${privacyDecision.strongestRssi}dBm"
+                    is PrivacyDecision.NoOptOutSignal -> "none"
+                }
+                val maskedFaceIds = facesToMask.map { it.id }
+                Log.d(
+                    TAG,
+                    "PrivacyPreviewDecision: mode=${privacyMode.name}, " +
+                        "bleOptOutCount=$bleCount, " +
+                        "sessionOptOutObserved=$hasObservedOptOutInSession, " +
+                        "sessionStickyActive=$isSessionStickyActive, " +
+                        "decisionType=${privacyDecision::class.simpleName}, " +
+                        "decisionReason=\"$decisionReason\", " +
+                        "detectedFacesCount=${faces.size}, " +
+                        "maskedFacesCount=${facesToMask.size}, " +
+                        "maskedFaceIds=$maskedFaceIds"
+                )
+            }
+
             // Stream frames from analyzer to Privacy Video Export Coordinator
             LaunchedEffect(analyzer, privacyMode) {
                 exportCoordinator.privacyMode = privacyMode
@@ -261,6 +291,7 @@ fun CameraScreen(
                 isFailClosedBlackoutActive = PrivacyPolicy.shouldApplyFailClosedBlackout(privacyDecision, isSessionStickyActive),
                 decision = privacyDecision,
                 hasObservedOptOutInSession = isSessionStickyActive,
+                privacyMode = privacyMode,
                 onFaceClick = { clickedFace ->
                     associationEngine.manuallyAssociateFace(clickedFace.id)
                 },
@@ -308,8 +339,9 @@ fun CameraScreen(
                 Spacer(modifier = Modifier.height(6.dp))
                 PrivacyDecisionBadge(
                     decision = privacyDecision,
+                    hasObservedOptOutInSession = isSessionStickyActive,
                     onClick = {
-                        if (privacyDecision.isOptOutActive) {
+                        if (privacyDecision.isOptOutActive || isSessionStickyActive) {
                             bleAdvertiser.stopAdvertising()
                             bleScanner.clearObservations()
                             associationEngine.resetSession()

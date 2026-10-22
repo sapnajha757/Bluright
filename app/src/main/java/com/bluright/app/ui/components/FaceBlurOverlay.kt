@@ -50,6 +50,7 @@ fun FaceBlurOverlay(
     isFailClosedBlackoutActive: Boolean = false,
     decision: PrivacyDecision? = null,
     hasObservedOptOutInSession: Boolean = false,
+    privacyMode: com.bluright.app.model.PrivacyMode = com.bluright.app.model.PrivacyMode.OPT_OUT_ONLY,
     onFaceClick: ((DetectedFace) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -177,7 +178,7 @@ fun FaceBlurOverlay(
             for (face in faces) {
                 // Under OPT_OUT_ONLY, only mask faces mandated by the unified privacy policy
                 val shouldMask = if (decision != null) {
-                    PrivacyPolicy.shouldMaskFace(face, decision, hasObservedOptOutInSession)
+                    PrivacyPolicy.shouldMaskFace(face, decision, hasObservedOptOutInSession, privacyMode)
                 } else {
                     true
                 }

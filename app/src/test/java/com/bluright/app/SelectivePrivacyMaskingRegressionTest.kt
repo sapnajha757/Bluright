@@ -477,6 +477,162 @@ class SelectivePrivacyMaskingRegressionTest {
         assertEquals("All faces must be masked under fail-closed sticky protection on signal loss", 2, lostMasked.size)
     }
 
+    // 14. Reproduction: OPT_OUT_ONLY with zero beacons and zero detected faces -> no mask, no blackout
+    @Test
+    fun test14_reproduction_optOutOnly_zeroBeacons_zeroFaces_noMask_noBlackout() {
+        val scannerState = BleScannerState.Scanning(emptyList())
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = emptyList(),
+            scannerState = scannerState,
+            currentTimeMs = 1000L
+        )
+
+        assertTrue("Decision must be NoOptOutSignal", decision is PrivacyDecision.NoOptOutSignal)
+        val masked = decision.resolveFacesToMask(
+            faces = emptyList(),
+            mode = PrivacyMode.OPT_OUT_ONLY,
+            hasSessionStickyOptOut = false
+        )
+        assertTrue("No faces to mask", masked.isEmpty())
+        assertFalse(
+            "Blackout must NOT be triggered when no opt-out signal exists",
+            com.bluright.app.privacy.PrivacyPolicy.shouldApplyFailClosedBlackout(decision, hasObservedOptOutInSession = false)
+        )
+        assertFalse(decision.shouldApplyFailClosedBlackoutIfNoFaces)
+    }
+
+    // 15. Reproduction: OPT_OUT_ONLY with zero beacons and one or more detected faces -> no faces masked, bystanders unmasked
+    @Test
+    fun test15_reproduction_optOutOnly_zeroBeacons_oneOrMoreFaces_bystandersUnmasked() {
+        val operator = createFace(10L, 0.2f, 0.2f, 0.45f, 0.6f)
+        val bystander = createFace(20L, 0.55f, 0.2f, 0.8f, 0.6f)
+        val faces = listOf(operator, bystander)
+        val scannerState = BleScannerState.Scanning(emptyList())
+
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = faces,
+            scannerState = scannerState,
+            currentTimeMs = 1000L
+        )
+
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        val maskedFaces = decision.resolveFacesToMask(
+            faces = faces,
+            mode = PrivacyMode.OPT_OUT_ONLY,
+            hasSessionStickyOptOut = false
+        )
+        assertTrue("Under OPT_OUT_ONLY with 0 beacons, zero faces must be masked", maskedFaces.isEmpty())
+
+        val unmaskedFaces = faces.filterNot { masked -> maskedFaces.any { it.id == masked.id } }
+        assertEquals("All faces must be unmasked bystanders", 2, unmaskedFaces.size)
+        assertFalse(
+            "No blackout when 0 beacons",
+            com.bluright.app.privacy.PrivacyPolicy.shouldApplyFailClosedBlackout(decision, hasObservedOptOutInSession = false)
+        )
+    }
+
+    // 16. Reproduction: Transition from zero opt-outs to active opt-out -> intended masking activates
+    @Test
+    fun test16_reproduction_transition_zeroToActiveOptOut_intendedMaskingActivates() {
+        val face = createFace(101L, 0.3f, 0.2f, 0.7f, 0.6f)
+
+        // Step 1: Initial state (zero beacons)
+        val initialDecision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(emptyList()),
+            currentTimeMs = 1000L
+        )
+        assertTrue(initialDecision is PrivacyDecision.NoOptOutSignal)
+        assertTrue(
+            "Initial: no mask",
+            initialDecision.resolveFacesToMask(listOf(face), PrivacyMode.OPT_OUT_ONLY, false).isEmpty()
+        )
+
+        // Step 2: Beacon arrives (close proximity, high confidence single face)
+        val beacon = createObservation(byteArrayOf(0x11, 0x22), -52, timestampMs = 1500L)
+        val activeDecision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(listOf(beacon)),
+            currentTimeMs = 1500L
+        )
+        assertTrue("Must transition to AssociationSupported", activeDecision is PrivacyDecision.AssociationSupported)
+        val activeMasked = activeDecision.resolveFacesToMask(listOf(face), PrivacyMode.OPT_OUT_ONLY, false)
+        assertEquals("Target face must be masked immediately", 1, activeMasked.size)
+        assertEquals(101L, activeMasked.first().id)
+    }
+
+    // 17. Reproduction: Dropping opt-out signal -> session-sticky or hold behavior works according to design
+    @Test
+    fun test17_reproduction_droppingOptOutSignal_holdAndStickyDesign() {
+        val face = createFace(101L, 0.3f, 0.2f, 0.7f, 0.6f)
+        val beacon = createObservation(byteArrayOf(0x33, 0x44), -50, timestampMs = 1000L)
+
+        // Active observation at t = 1000
+        associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(listOf(beacon)),
+            currentTimeMs = 1000L
+        )
+
+        // Signal drops at t = 2000 (elapsed = 1000ms < 6000ms hold)
+        val holdDecision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(emptyList()),
+            currentTimeMs = 2000L
+        )
+        assertTrue("Signal loss within 6000ms must trigger OptOutSignalHold", holdDecision is PrivacyDecision.OptOutSignalHold)
+        assertEquals(
+            "Hold requires protective masking",
+            1,
+            holdDecision.resolveFacesToMask(listOf(face), PrivacyMode.OPT_OUT_ONLY, false).size
+        )
+
+        // Hold expires at t = 8000ms (elapsed = 7000ms > 6000ms hold)
+        val expiredDecision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(emptyList()),
+            currentTimeMs = 8000L
+        )
+        assertTrue("Expired hold must transition to NoOptOutSignal", expiredDecision is PrivacyDecision.NoOptOutSignal)
+
+        // Case A: Outside recording session (not sticky) -> unmask cleanly
+        val unmaskedOutside = expiredDecision.resolveFacesToMask(
+            faces = listOf(face),
+            mode = PrivacyMode.OPT_OUT_ONLY,
+            hasSessionStickyOptOut = false
+        )
+        assertTrue("Outside recording session, expired hold must unmask", unmaskedOutside.isEmpty())
+
+        // Case B: Inside active recording session where opt-out was observed (sticky) -> fail-closed mask
+        val maskedInsideSession = expiredDecision.resolveFacesToMask(
+            faces = listOf(face),
+            mode = PrivacyMode.OPT_OUT_ONLY,
+            hasSessionStickyOptOut = true
+        )
+        assertEquals("Inside recording session, sticky fail-closed must retain mask", 1, maskedInsideSession.size)
+    }
+
+    // 18. Reproduction: Verification that badge semantics and ALL_FACES mode are consistent with resolved masks
+    @Test
+    fun test18_reproduction_badgeSemantics_and_allFacesMode() {
+        val face = createFace(101L, 0.3f, 0.2f, 0.7f, 0.6f)
+        val scannerState = BleScannerState.Scanning(emptyList())
+
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = scannerState,
+            currentTimeMs = 1000L
+        )
+
+        // Under OPT_OUT_ONLY with 0 beacons
+        val optOutOnlyMasked = decision.resolveFacesToMask(listOf(face), PrivacyMode.OPT_OUT_ONLY, false)
+        assertEquals("Resolved mask count must be 0", 0, optOutOnlyMasked.size)
+
+        // Under ALL_FACES mode with 0 beacons
+        val allFacesMasked = decision.resolveFacesToMask(listOf(face), PrivacyMode.ALL_FACES, false)
+        assertEquals("ALL_FACES mode must mask face even with 0 beacons", 1, allFacesMasked.size)
+    }
+
     private fun createFace(id: Long, left: Float, top: Float, right: Float, bottom: Float): DetectedFace {
         return DetectedFace(
             id = id,

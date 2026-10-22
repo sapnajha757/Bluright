@@ -40,17 +40,27 @@ import com.bluright.app.ui.theme.TextPrimary
 @Composable
 fun PrivacyDecisionBadge(
     decision: PrivacyDecision,
+    hasObservedOptOutInSession: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val (label, detail, color, icon) = when (decision) {
         is PrivacyDecision.NoOptOutSignal -> {
-            Quad(
-                "BLE: 0 OPT-OUTS",
-                "SCANNING",
-                TealAccent,
-                Icons.Default.Bluetooth
-            )
+            if (hasObservedOptOutInSession) {
+                Quad(
+                    "BLE: 0 OPT-OUTS",
+                    "SESSION PROTECTED",
+                    PrivacyWarning,
+                    Icons.Default.Shield
+                )
+            } else {
+                Quad(
+                    "BLE: 0 OPT-OUTS",
+                    "SCANNING",
+                    TealAccent,
+                    Icons.Default.Bluetooth
+                )
+            }
         }
         is PrivacyDecision.OptOutDetectedUnverified -> {
             val count = decision.activeObservations.size
