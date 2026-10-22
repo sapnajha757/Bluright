@@ -12,6 +12,7 @@ import com.bluright.app.model.DetectedFace
 import com.bluright.app.model.DetectionState
 import com.bluright.app.privacy.FaceAssociationEngine
 import com.bluright.app.privacy.PrivacyDecision
+import com.bluright.app.privacy.PrivacyPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -96,6 +97,7 @@ class FaceDetectionPrivacyValidationTest {
         assertTrue(decision is PrivacyDecision.AssociationSupported)
         val supported = decision as PrivacyDecision.AssociationSupported
         assertEquals(101L, supported.faceId)
+        assertTrue(decision.shouldMaskFace(face))
         assertFalse(supported.requiresMaskingAllFaces)
         assertEquals(listOf(face), supported.resolveFacesToMask(listOf(face)))
 
@@ -359,5 +361,244 @@ class FaceDetectionPrivacyValidationTest {
         assertEquals(MaskingAuditStatus.VERIFIED_STRENGTHENED, audit.status)
         assertEquals(1, audit.edgeClampedCount)
         assertEquals(1, audit.facesStrengthenedCount)
+    }
+
+    // 15. OPT_OUT_ONLY: Face detected, no opt-out signal -> no mask
+    @Test
+    fun test15_faceDetected_noOptOutSignal_notMaskedInPreviewOrExport() {
+        val face = DetectedFace(1L, 0.2f, 0.2f, 0.6f, 0.6f, 0.95f)
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(emptyList())
+        )
+
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        assertFalse("Face alone must not trigger blanket masking", decision.requiresMaskingAllFaces)
+        assertFalse("Face alone must not be masked", decision.shouldMaskFace(face))
+
+        // When exported under OPT_OUT_ONLY, 0 faces are masked and frame is counted as unmasked
+        val facesToMask = listOf(face).filter { decision.shouldMaskFace(it) }
+        assertEquals(0, facesToMask.size)
+
+        receiptCollector.recordFrame(0, 1000L, listOf(face), maskedFacesCount = 0, decision = decision, isBlackedOut = false)
+        assertEquals(1, receiptCollector.getTotalFrames())
+        assertEquals(0, receiptCollector.getMaskedFramesCount())
+        assertEquals(1, receiptCollector.getUnmaskedFramesCount())
+    }
+
+    // 16. OPT_OUT_ONLY: Multiple detected faces, no opt-out signal -> no mask solely due to detection
+    @Test
+    fun test16_multipleFacesDetected_noOptOutSignal_notMaskedInPreviewOrExport() {
+        val face1 = DetectedFace(1L, 0.1f, 0.1f, 0.4f, 0.4f, 0.92f)
+        val face2 = DetectedFace(2L, 0.5f, 0.1f, 0.8f, 0.4f, 0.90f)
+        val faces = listOf(face1, face2)
+
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = faces,
+            scannerState = BleScannerState.Scanning(emptyList())
+        )
+
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        assertFalse(decision.requiresMaskingAllFaces)
+        for (f in faces) {
+            assertFalse("Neither face should be masked without opt-out", decision.shouldMaskFace(f))
+        }
+
+        val facesToMask = faces.filter { decision.shouldMaskFace(it) }
+        assertEquals(0, facesToMask.size)
+
+        receiptCollector.recordFrame(0, 1000L, faces, maskedFacesCount = 0, decision = decision, isBlackedOut = false)
+        assertEquals(1, receiptCollector.getTotalFrames())
+        assertEquals(0, receiptCollector.getMaskedFramesCount())
+        assertEquals(1, receiptCollector.getUnmaskedFramesCount())
+    }
+
+    // 17. OPT_OUT_ONLY: Single face with reliable association masks target
+    @Test
+    fun test17_oneFaceOptOut_associatesAndMasksOnlyTargetFace() {
+        val face1 = DetectedFace(101L, 0.2f, 0.2f, 0.5f, 0.5f, 0.94f)
+        val otherFace = DetectedFace(202L, 0.6f, 0.2f, 0.9f, 0.5f, 0.90f)
+        val obs = BleObservation(byteArrayOf(1, 2, 3), -48)
+
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face1),
+            scannerState = BleScannerState.Scanning(listOf(obs))
+        )
+
+        assertTrue(decision is PrivacyDecision.AssociationSupported)
+        assertTrue("Target associated face must be masked", decision.shouldMaskFace(face1))
+        assertFalse("Unassociated face must not be masked by this decision", decision.shouldMaskFace(otherFace))
+    }
+
+    // 18. Session-sticky protection & safe release
+    @Test
+    fun test18_sessionStickyProtection_andSafeReleaseCriteria() {
+        val face = DetectedFace(1L, 0.2f, 0.2f, 0.5f, 0.5f, 0.92f)
+        val obs = BleObservation(byteArrayOf(5, 5, 5), -50)
+
+        // Frame 0: Opt-out active
+        val dec1 = associationEngine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(listOf(obs)), currentTimeMs = 1000L)
+        assertTrue(dec1.isOptOutActive)
+
+        // Frame 1: RF packet loss at t=2000ms (within 6000ms hold)
+        val dec2 = associationEngine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()), currentTimeMs = 2000L)
+        assertTrue("Must hold protection during hysteresis", dec2 is PrivacyDecision.OptOutSignalHold)
+        assertTrue("Protective masking preserved during hold", dec2.shouldMaskFace(face))
+
+        // Frame 2: BLE turned off at t=3000ms
+        val decOff = associationEngine.evaluatePrivacyDecision(listOf(face), BleScannerState.BluetoothDisabled, currentTimeMs = 3000L)
+        assertTrue("Must hold protection when BLE disabled during hold", decOff is PrivacyDecision.OptOutSignalHold)
+        assertTrue(decOff.shouldMaskFace(face))
+
+        // Frame 3: Explicit safe release
+        associationEngine.resetSession()
+        val decClean = associationEngine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()), currentTimeMs = 3500L)
+        assertTrue("Decision must return clean NoOptOutSignal after explicit session reset", decClean is PrivacyDecision.NoOptOutSignal)
+        assertFalse("Face no longer masked after safe release", decClean.shouldMaskFace(face))
+    }
+
+    // 19. Preview and Export consistency: identical masking decisions across all states
+    @Test
+    fun test19_previewAndExportMaskingConsistency_acrossPrivacyStates() {
+        val face1 = DetectedFace(101L, 0.2f, 0.2f, 0.5f, 0.5f, 0.95f)
+        val face2 = DetectedFace(202L, 0.6f, 0.2f, 0.9f, 0.5f, 0.90f)
+        val faces = listOf(face1, face2)
+
+        val states = listOf(
+            PrivacyDecision.NoOptOutSignal(visibleFacesCount = 2),
+            PrivacyDecision.BleUnavailable(reason = "Disabled", visibleFacesCount = 2),
+            PrivacyDecision.AmbiguousConservativeMask("Multiple faces", 2, 1, -55),
+            PrivacyDecision.OptOutSignalHold(1500L, "ABCD", 2),
+            PrivacyDecision.AssociationSupported(101L, "ABCD", -50, 0.9f, emptyList()),
+            PrivacyDecision.OptOutDetectedUnverified(emptyList(), -50)
+        )
+
+        for (sticky in listOf(false, true)) {
+            for (dec in states) {
+                for (face in faces) {
+                    val previewDecision = PrivacyPolicy.shouldMaskFace(face, dec, hasObservedOptOutInSession = sticky)
+                    val exportDecision = PrivacyPolicy.shouldMaskFace(face, dec, hasObservedOptOutInSession = sticky)
+                    val decisionDirect = dec.shouldMaskFace(face, hasObservedOptOutInSession = sticky)
+
+                    assertEquals(
+                        "Preview and export must make identical decisions for face ${face.id} under ${dec::class.simpleName} with sticky=$sticky",
+                        exportDecision,
+                        previewDecision
+                    )
+                    assertEquals(
+                        "PrivacyDecision.shouldMaskFace must match PrivacyPolicy.shouldMaskFace",
+                        exportDecision,
+                        decisionDirect
+                    )
+                }
+            }
+        }
+    }
+
+    // 20. Session-sticky protection after 6000ms hold expires
+    @Test
+    fun test20_sessionStickyProtection_whenHoldExpires_preservesMaskingInPreviewAndExport() {
+        val face = DetectedFace(1L, 0.2f, 0.2f, 0.5f, 0.5f, 0.92f)
+        val obs = BleObservation(byteArrayOf(1, 2, 3), -50)
+
+        // 1. Opt-out observed during active session at t=1000ms
+        val decActive = associationEngine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(listOf(obs)), currentTimeMs = 1000L)
+        assertTrue(decActive.isOptOutActive)
+        val sessionObservedOptOut = true
+
+        // 2. 7000ms elapsed (> 6000ms hold window) without packets -> engine reports NoOptOutSignal
+        val decExpired = associationEngine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()), currentTimeMs = 8000L)
+        assertTrue("Engine reports NoOptOutSignal after hold expires", decExpired is PrivacyDecision.NoOptOutSignal)
+
+        // 3. For a session without opt-out: face is NOT masked
+        assertFalse(
+            "Without session opt-out, NoOptOutSignal must not mask face",
+            PrivacyPolicy.shouldMaskFace(face, decExpired, hasObservedOptOutInSession = false)
+        )
+
+        // 4. For the active session that observed opt-out: face REMAINS masked in both preview and export
+        val previewMask = PrivacyPolicy.shouldMaskFace(face, decExpired, hasObservedOptOutInSession = sessionObservedOptOut)
+        val exportMask = PrivacyPolicy.shouldMaskFace(face, decExpired, hasObservedOptOutInSession = sessionObservedOptOut)
+        assertTrue("Live preview must preserve masking after hold expires in active session", previewMask)
+        assertTrue("Export must preserve masking after hold expires in active session", exportMask)
+        assertEquals("Preview and export must agree", previewMask, exportMask)
+    }
+
+    // 21. Session-sticky protection when BLE becomes unavailable after opt-out
+    @Test
+    fun test21_sessionStickyProtection_whenBleUnavailable_preservesMaskingInPreviewAndExport() {
+        val face = DetectedFace(1L, 0.2f, 0.2f, 0.5f, 0.5f, 0.92f)
+        val decBleUnavailable = PrivacyDecision.BleUnavailable(reason = "Bluetooth disabled", visibleFacesCount = 1)
+
+        // Scenario A: Fresh session without opt-out -> BleUnavailable does NOT mask faces
+        assertFalse(
+            "Fresh session with BleUnavailable must not mask faces",
+            PrivacyPolicy.shouldMaskFace(face, decBleUnavailable, hasObservedOptOutInSession = false)
+        )
+
+        // Scenario B: Active session with prior opt-out -> BleUnavailable preserves protection in preview and export
+        val previewMask = PrivacyPolicy.shouldMaskFace(face, decBleUnavailable, hasObservedOptOutInSession = true)
+        val exportMask = PrivacyPolicy.shouldMaskFace(face, decBleUnavailable, hasObservedOptOutInSession = true)
+        assertTrue("Preview must preserve masking when BLE becomes unavailable after opt-out", previewMask)
+        assertTrue("Export must preserve masking when BLE becomes unavailable after opt-out", exportMask)
+    }
+
+    // 22. Trustworthy association during active session with prior opt-out masks only target face
+    @Test
+    fun test22_trustworthyAssociation_duringActiveSession_masksOnlyTargetFace() {
+        val targetFace = DetectedFace(101L, 0.2f, 0.2f, 0.5f, 0.5f, 0.95f)
+        val bystanderFace = DetectedFace(202L, 0.6f, 0.2f, 0.9f, 0.5f, 0.90f)
+        val decision = PrivacyDecision.AssociationSupported(
+            faceId = 101L,
+            tokenHex = "CAFE",
+            rssi = -45,
+            confidenceScore = 0.95f,
+            disclaimers = emptyList()
+        )
+
+        // Even with hasObservedOptOutInSession = true, trustworthy association only masks target face
+        assertTrue(
+            "Target face must be masked",
+            PrivacyPolicy.shouldMaskFace(targetFace, decision, hasObservedOptOutInSession = true)
+        )
+        assertFalse(
+            "Bystander face must NOT be masked solely because session saw opt-out when trustworthy association exists",
+            PrivacyPolicy.shouldMaskFace(bystanderFace, decision, hasObservedOptOutInSession = true)
+        )
+    }
+
+    // 23. Full-frame blackout consistency for 0 faces
+    @Test
+    fun test23_failClosedBlackoutConsistency_forZeroFaces() {
+        val decNoSignal = PrivacyDecision.NoOptOutSignal(0)
+        val decBleOff = PrivacyDecision.BleUnavailable("Disabled", 0)
+        val decOptOut = PrivacyDecision.OptOutDetectedUnverified(emptyList(), -50)
+
+        // No prior opt-out: no blackout for NoOptOutSignal or BleUnavailable
+        assertFalse(PrivacyPolicy.shouldApplyFailClosedBlackout(decNoSignal, hasObservedOptOutInSession = false))
+        assertFalse(PrivacyPolicy.shouldApplyFailClosedBlackout(decBleOff, hasObservedOptOutInSession = false))
+        assertTrue(PrivacyPolicy.shouldApplyFailClosedBlackout(decOptOut, hasObservedOptOutInSession = false))
+
+        // Session opt-out observed: full blackout applied in preview and export even if signal lost or BLE off
+        assertTrue(PrivacyPolicy.shouldApplyFailClosedBlackout(decNoSignal, hasObservedOptOutInSession = true))
+        assertTrue(PrivacyPolicy.shouldApplyFailClosedBlackout(decBleOff, hasObservedOptOutInSession = true))
+        assertTrue(PrivacyPolicy.shouldApplyFailClosedBlackout(decOptOut, hasObservedOptOutInSession = true))
+    }
+
+    // 24. Explicit session reset safely clears sticky protection
+    @Test
+    fun test24_explicitSessionReset_clearsStickyProtection() {
+        val face = DetectedFace(1L, 0.2f, 0.2f, 0.5f, 0.5f, 0.92f)
+        var hasObservedOptOutInSession = true
+
+        val decNoSignal = PrivacyDecision.NoOptOutSignal(1)
+        assertTrue(PrivacyPolicy.shouldMaskFace(face, decNoSignal, hasObservedOptOutInSession))
+
+        // Safe release / new session reset
+        hasObservedOptOutInSession = false
+        assertFalse(
+            "Session reset must clear sticky protection",
+            PrivacyPolicy.shouldMaskFace(face, decNoSignal, hasObservedOptOutInSession)
+        )
     }
 }

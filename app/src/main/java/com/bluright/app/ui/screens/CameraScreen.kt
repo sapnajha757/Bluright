@@ -55,6 +55,7 @@ import com.bluright.app.model.CameraLens
 import com.bluright.app.model.DetectionState
 import com.bluright.app.model.PrivacyMode
 import com.bluright.app.privacy.FaceAssociationEngine
+import com.bluright.app.privacy.PrivacyPolicy
 import com.bluright.app.ui.components.CameraControls
 import com.bluright.app.ui.components.ExportSuccessDialog
 import com.bluright.app.ui.components.FaceBlurOverlay
@@ -93,6 +94,7 @@ fun CameraScreen(
     val bleScannerState by bleScanner.scannerState.collectAsState()
     val bleAdvertiserState by bleAdvertiser.advertiserState.collectAsState()
     val exportState by exportCoordinator.exportState.collectAsState()
+    val hasObservedOptOutInSession by exportCoordinator.hasObservedOptOutInSession.collectAsState()
 
     // Start/Stop BLE Scanner with screen lifecycle and auto-resume on ON_RESUME
     DisposableEffect(lifecycleOwner) {
@@ -218,13 +220,16 @@ fun CameraScreen(
                 associationEngine.evaluatePrivacyDecision(faces, bleScannerState)
             }
 
+            val isRecording = exportState is ExportState.Recording
+            val isSessionStickyActive = isRecording && (hasObservedOptOutInSession || privacyDecision.isOptOutActive)
+
             // Determine faces that require masking based on privacy decision, active PrivacyMode (default OPT_OUT_ONLY),
             // and session-sticky opt-out history
-            val facesToMask = remember(faces, privacyDecision, privacyMode, exportCoordinator.hasObservedOptOutInSession) {
+            val facesToMask = remember(faces, privacyDecision, privacyMode, isSessionStickyActive) {
                 privacyDecision.resolveFacesToMask(
                     faces = faces,
                     mode = privacyMode,
-                    hasSessionStickyOptOut = exportCoordinator.hasObservedOptOutInSession
+                    hasSessionStickyOptOut = isSessionStickyActive
                 )
             }
 
@@ -248,14 +253,14 @@ fun CameraScreen(
                 }
             }
 
-            val isFailClosedBlackout = (faces.isEmpty() && (privacyDecision.shouldApplyFailClosedBlackoutIfNoFaces || exportCoordinator.hasObservedOptOutInSession))
-
             FaceBlurOverlay(
                 faces = facesToMask,
                 unmaskedFaces = unmaskedFaces,
                 frameAspectRatio = frameAspectRatio,
                 blurStyle = blurStyle,
-                isFailClosedBlackoutActive = isFailClosedBlackout,
+                isFailClosedBlackoutActive = PrivacyPolicy.shouldApplyFailClosedBlackout(privacyDecision, isSessionStickyActive),
+                decision = privacyDecision,
+                hasObservedOptOutInSession = isSessionStickyActive,
                 onFaceClick = { clickedFace ->
                     associationEngine.manuallyAssociateFace(clickedFace.id)
                 },
@@ -308,7 +313,6 @@ fun CameraScreen(
             }
 
             // 5. Bottom Controls Bar
-            val isRecording = exportState is ExportState.Recording
             val recordingDurationMs = (exportState as? ExportState.Recording)?.durationMs ?: 0L
 
             CameraControls(
@@ -324,14 +328,14 @@ fun CameraScreen(
                     if (isRecording) {
                         exportCoordinator.stopRecording()
                     } else {
-                        exportCoordinator.startRecording(blurStyle)
+                        exportCoordinator.startRecording(blurStyle, isOptOutCurrentlyActive = privacyDecision.isOptOutActive)
                     }
                 },
                 onToggleRecording = {
                     if (isRecording) {
                         exportCoordinator.stopRecording()
                     } else {
-                        exportCoordinator.startRecording(blurStyle)
+                        exportCoordinator.startRecording(blurStyle, isOptOutCurrentlyActive = privacyDecision.isOptOutActive)
                     }
                 },
                 modifier = Modifier.align(Alignment.BottomCenter)

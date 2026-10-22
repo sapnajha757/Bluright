@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bluright.app.model.BlurStyle
 import com.bluright.app.model.DetectedFace
+import com.bluright.app.privacy.PrivacyDecision
+import com.bluright.app.privacy.PrivacyPolicy
 import com.bluright.app.ui.theme.CyanAccent
 import com.bluright.app.ui.theme.CyanPrimary
 import com.bluright.app.ui.theme.NavyCard
@@ -46,6 +48,8 @@ fun FaceBlurOverlay(
     frameAspectRatio: Float,
     blurStyle: BlurStyle,
     isFailClosedBlackoutActive: Boolean = false,
+    decision: PrivacyDecision? = null,
+    hasObservedOptOutInSession: Boolean = false,
     onFaceClick: ((DetectedFace) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -98,7 +102,10 @@ fun FaceBlurOverlay(
         } else Modifier
 
         Canvas(modifier = Modifier.fillMaxSize().then(tapModifier)) {
-            if (isFailClosedBlackoutActive && faces.isEmpty()) {
+            val isBlackout = isFailClosedBlackoutActive ||
+                (decision != null && PrivacyPolicy.shouldApplyFailClosedBlackout(decision, hasObservedOptOutInSession))
+
+            if (isBlackout && faces.isEmpty()) {
                 // Render fail-closed blackout shield over preview
                 drawRect(
                     color = Color(0xF2050811),
@@ -145,10 +152,15 @@ fun FaceBlurOverlay(
                     topLeft = Offset(bannerLeft + (bannerW - t1.size.width) / 2f, bannerTop + 20f)
                 )
 
-                val t2 = textMeasurer.measure("OPT-OUT ACTIVE // COVERAGE UNVERIFIED", subStyle)
+                val reasonText = if (decision?.isOptOutActive == true) {
+                    "OPT-OUT ACTIVE // COVERAGE UNVERIFIED"
+                } else {
+                    "OPT-OUT OBSERVED IN SESSION // COVERAGE UNVERIFIED"
+                }
+                val t2 = textMeasurer.measure(reasonText, subStyle)
                 drawText(
                     textMeasurer = textMeasurer,
-                    text = "OPT-OUT ACTIVE // COVERAGE UNVERIFIED",
+                    text = reasonText,
                     style = subStyle,
                     topLeft = Offset(bannerLeft + (bannerW - t2.size.width) / 2f, bannerTop + 58f)
                 )
@@ -163,6 +175,16 @@ fun FaceBlurOverlay(
                 return@Canvas
             }
             for (face in faces) {
+                // Under OPT_OUT_ONLY, only mask faces mandated by the unified privacy policy
+                val shouldMask = if (decision != null) {
+                    PrivacyPolicy.shouldMaskFace(face, decision, hasObservedOptOutInSession)
+                } else {
+                    true
+                }
+                if (!shouldMask) {
+                    continue
+                }
+
                 // Adaptive safety expansion (15-25%) identical to video export pipeline
                 val expanded = face.expandedAdaptive()
 

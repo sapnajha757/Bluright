@@ -9,6 +9,7 @@ import com.bluright.app.model.BlurStyle
 import com.bluright.app.model.DetectedFace
 import com.bluright.app.model.PrivacyMode
 import com.bluright.app.privacy.PrivacyDecision
+import com.bluright.app.privacy.PrivacyPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,9 @@ class PrivacyExportCoordinator(
     private var frameCounter = 0
     private var currentStyle = BlurStyle.PIXELATE
 
+    private val _hasObservedOptOutInSession = MutableStateFlow(false)
+    val hasObservedOptOutInSession: StateFlow<Boolean> = _hasObservedOptOutInSession.asStateFlow()
+
     @Volatile
     var privacyMode: PrivacyMode = PrivacyMode.OPT_OUT_ONLY
 
@@ -51,12 +55,6 @@ class PrivacyExportCoordinator(
         set(value) {
             privacyMode = if (value) PrivacyMode.ALL_FACES else PrivacyMode.OPT_OUT_ONLY
         }
-
-    val hasObservedOptOutInSession: Boolean
-        get() = _hasObservedOptOutInSession
-
-    @Volatile
-    private var _hasObservedOptOutInSession: Boolean = false
 
     private var currentVideoFile: File? = null
     private var currentManifestFile: File? = null
@@ -69,11 +67,16 @@ class PrivacyExportCoordinator(
     val isRecording: Boolean
         get() = _exportState.value is ExportState.Recording
 
+    fun resetSession() {
+        _hasObservedOptOutInSession.value = false
+        receiptCollector.startSession()
+    }
+
     /**
      * Starts a new privacy video recording session.
      */
     @Synchronized
-    fun startRecording(style: BlurStyle = BlurStyle.PIXELATE) {
+    fun startRecording(style: BlurStyle = BlurStyle.PIXELATE, isOptOutCurrentlyActive: Boolean = false) {
         if (isRecording || _exportState.value is ExportState.Finalizing) return
 
         try {
@@ -100,7 +103,7 @@ class PrivacyExportCoordinator(
             sessionStartTimeMs = System.currentTimeMillis()
             sessionStartUptimeUs = SystemClock.uptimeMillis() * 1000L
             frameCounter = 0
-            _hasObservedOptOutInSession = false
+            _hasObservedOptOutInSession.value = isOptOutCurrentlyActive
 
             _exportState.value = ExportState.Recording(
                 durationMs = 0L,
@@ -139,9 +142,10 @@ class PrivacyExportCoordinator(
                 val frameIndex = frameCounter++
                 val presentationTimeUs = (SystemClock.uptimeMillis() * 1000L) - sessionStartUptimeUs
 
-                if (decision.isOptOutActive) {
-                    _hasObservedOptOutInSession = true
+                if (decision.isOptOutActive && !_hasObservedOptOutInSession.value) {
+                    _hasObservedOptOutInSession.value = true
                 }
+                val stickyActive = _hasObservedOptOutInSession.value
 
                 // Create a mutable copy of the bitmap to burn masks in-place
                 val mutableFrame = bitmap.copy(Bitmap.Config.ARGB_8888, true)
@@ -152,13 +156,12 @@ class PrivacyExportCoordinator(
                 val facesToMask = decision.resolveFacesToMask(
                     faces = faces,
                     mode = privacyMode,
-                    hasSessionStickyOptOut = _hasObservedOptOutInSession
+                    hasSessionStickyOptOut = stickyActive
                 )
 
                 if (facesToMask.isNotEmpty()) {
-                    // Burn masks onto faces requiring privacy protection
                     maskedFacesCount = PrivacyMaskRenderer.burnMask(mutableFrame, facesToMask, currentStyle)
-                } else if (faces.isEmpty() && (decision.isOptOutActive || _hasObservedOptOutInSession)) {
+                } else if (faces.isEmpty() && PrivacyPolicy.shouldApplyFailClosedBlackout(decision, stickyActive)) {
                     // FAIL-CLOSED PRIVACY POLICY (DEF-01):
                     // Opt-out signal is active or was observed in this session, but zero faces detected.
                     // Visual coverage cannot be trusted (face detector false negative risk).
@@ -284,7 +287,7 @@ class PrivacyExportCoordinator(
      */
     @Synchronized
     fun cancelRecording() {
-        _hasObservedOptOutInSession = false
+        _hasObservedOptOutInSession.value = false
         activeEncoder?.cleanup()
         activeEncoder = null
         currentVideoFile?.delete()

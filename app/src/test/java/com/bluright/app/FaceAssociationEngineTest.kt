@@ -27,7 +27,9 @@ class FaceAssociationEngineTest {
         val decision = engine.evaluatePrivacyDecision(faces, BleScannerState.BluetoothDisabled)
 
         assertTrue(decision is PrivacyDecision.BleUnavailable)
-        assertTrue(decision.requiresMaskingAllFaces)
+        // Under OPT_OUT_ONLY, Bluetooth disabled without a prior opt-out does not trigger masking
+        assertFalse(decision.requiresMaskingAllFaces)
+        assertFalse(decision.shouldMaskFace(faces[0]))
     }
 
     @Test
@@ -37,8 +39,9 @@ class FaceAssociationEngineTest {
 
         assertTrue(decision is PrivacyDecision.NoOptOutSignal)
         assertEquals(1, (decision as PrivacyDecision.NoOptOutSignal).visibleFacesCount)
-        // With 0 opt-out signals, ordinary faces are not masked unless all-faces mode is active
+        // Under OPT_OUT_ONLY, detecting a face alone must never trigger masking
         assertFalse(decision.requiresMaskingAllFaces)
+        assertFalse(decision.shouldMaskFace(faces[0]))
         assertTrue(decision.resolveFacesToMask(faces).isEmpty())
     }
 
@@ -142,18 +145,85 @@ class FaceAssociationEngineTest {
     }
 
     @Test
+    fun testMultipleFacesWithoutOptOutSignal_doesNotMaskFaces() {
+        val faces = listOf(createDummyFace(1L), createDummyFace(2L), createDummyFace(3L))
+        val decision = engine.evaluatePrivacyDecision(faces, BleScannerState.Scanning(emptyList()))
+
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        assertEquals(3, (decision as PrivacyDecision.NoOptOutSignal).visibleFacesCount)
+        assertFalse(decision.requiresMaskingAllFaces)
+        for (face in faces) {
+            assertFalse(decision.shouldMaskFace(face))
+        }
+    }
+
+    @Test
+    fun testOptOutDisappears_protectiveMaskingPreservedDuringHold() {
+        val obs = listOf(createObservation(byteArrayOf(1, 2, 3), -50))
+        val face = createDummyFace(1L)
+        // 1. Initial observation with face
+        val dec1 = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(obs), currentTimeMs = 1000L)
+        assertTrue(dec1 is PrivacyDecision.AssociationSupported)
+        assertTrue(dec1.shouldMaskFace(face))
+
+        // 2. Opt-out signal drops (empty scan) 2 seconds later (within 6000ms hold)
+        val dec2 = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()), currentTimeMs = 3000L)
+        assertTrue("Must enter OptOutSignalHold on packet loss", dec2 is PrivacyDecision.OptOutSignalHold)
+        assertTrue("Must preserve protective masking during hold", dec2.requiresMaskingAllFaces)
+        assertTrue(dec2.shouldMaskFace(face))
+    }
+
+    @Test
+    fun testBleUnavailableAfterOptOut_preservesProtectiveHold() {
+        val obs = listOf(createObservation(byteArrayOf(1, 2, 3), -50))
+        val face = createDummyFace(1L)
+        // 1. Initial opt-out
+        engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(obs), currentTimeMs = 1000L)
+
+        // 2. Bluetooth turned off 1 second later
+        val decOff = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.BluetoothDisabled, currentTimeMs = 2000L)
+        assertTrue("Must preserve protection hold when Bluetooth disabled after opt-out", decOff is PrivacyDecision.OptOutSignalHold)
+        assertTrue(decOff.requiresMaskingAllFaces)
+        assertTrue(decOff.shouldMaskFace(face))
+
+        // 3. Permissions denied after opt-out
+        val decPerm = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.PermissionDenied, currentTimeMs = 2500L)
+        assertTrue("Must preserve protection hold when permissions denied after opt-out", decPerm is PrivacyDecision.OptOutSignalHold)
+        assertTrue(decPerm.requiresMaskingAllFaces)
+    }
+
+    @Test
+    fun testExplicitSessionReset_clearsPreviousHoldProtection() {
+        val obs = listOf(createObservation(byteArrayOf(1, 2, 3), -50))
+        val face = createDummyFace(1L)
+        // 1. Opt-out active
+        engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(obs), currentTimeMs = 1000L)
+
+        // 2. Explicit session reset / safe release
+        engine.resetSession()
+
+        // 3. New evaluation with scanning empty: should return clean NoOptOutSignal without hold
+        val decision = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()), currentTimeMs = 1500L)
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        assertFalse(decision.requiresMaskingAllFaces)
+        assertFalse(decision.shouldMaskFace(face))
+    }
+
+    @Test
     fun testOptOutDetectedWithZeroFacesInView() {
         val obs = listOf(createObservation(byteArrayOf(1, 2, 3), -50))
         val decision = engine.evaluatePrivacyDecision(emptyList(), BleScannerState.Scanning(obs))
 
         assertTrue(decision is PrivacyDecision.OptOutDetectedUnverified)
+        assertTrue(decision.isOptOutActive)
         assertEquals(-50, (decision as PrivacyDecision.OptOutDetectedUnverified).strongestRssi)
+        assertEquals(1, decision.activeObservations.size)
     }
 
     @Test
-    fun testMultipleFacesTriggersConservativeFailSafe() {
+    fun testMultipleFacesWithSingleOptOutTriggersConservativeMask() {
         val faces = listOf(createDummyFace(1L), createDummyFace(2L))
-        val obs = listOf(createObservation(byteArrayOf(1, 2, 3), -52))
+        val obs = listOf(createObservation(byteArrayOf(1, 2, 3), -50))
         val decision = engine.evaluatePrivacyDecision(faces, BleScannerState.Scanning(obs))
 
         assertTrue(decision is PrivacyDecision.AmbiguousConservativeMask)

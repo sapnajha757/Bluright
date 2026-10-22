@@ -70,7 +70,7 @@ sealed interface PrivacyDecision {
 
     /**
      * Bluetooth is disabled, permissions are missing, or hardware BLE is unsupported.
-     * Face masking pipeline remains conservative and safe.
+     * When no opt-out was observed in the session, camera operates without masking.
      */
     data class BleUnavailable(
         val reason: String,
@@ -93,21 +93,24 @@ sealed interface PrivacyDecision {
 
     /**
      * Whether all visible faces must be blurred under this decision.
-     * Returns true for conservative fail-safe decisions (Ambiguous, Hold, Unverified, BleUnavailable).
-     * Returns false for NoOptOutSignal (clear) and AssociationSupported (targeted masking).
+     * Under OPT_OUT_ONLY policy:
+     * - Only ambiguous / uncertain association (AmbiguousConservativeMask) or conservative hold
+     *   (OptOutSignalHold) mandates blanket masking of all visible faces.
+     * - In the absence of an opt-out signal (NoOptOutSignal, BleUnavailable), detection alone never triggers blanket masking.
+     * - In AssociationSupported, only the associated face is masked.
      */
     val requiresMaskingAllFaces: Boolean
         get() = when (this) {
             is AmbiguousConservativeMask -> true
-            is OptOutDetectedUnverified -> true
             is OptOutSignalHold -> true
-            is BleUnavailable -> true
-            is AssociationSupported -> false
             is NoOptOutSignal -> false
+            is OptOutDetectedUnverified -> false
+            is AssociationSupported -> false
+            is BleUnavailable -> false
         }
 
     /**
-     * Whether an opt-out signal or active protection hold is currently active.
+     * True if an opt-out beacon is currently transmitting or held in hysteresis.
      */
     val isOptOutActive: Boolean
         get() = when (this) {
@@ -115,12 +118,14 @@ sealed interface PrivacyDecision {
             is AmbiguousConservativeMask -> true
             is AssociationSupported -> true
             is OptOutSignalHold -> true
-            is BleUnavailable -> false
             is NoOptOutSignal -> false
+            is BleUnavailable -> false
         }
 
     /**
-     * Whether fail-closed policy requires a full-frame blackout if zero faces are detected.
+     * Under fail-closed policy, when an opt-out signal is active or held, but zero faces
+     * are detected in the frame, full-frame blackout is required because visual coverage
+     * cannot be guaranteed.
      */
     val shouldApplyFailClosedBlackoutIfNoFaces: Boolean
         get() = when (this) {
@@ -129,6 +134,16 @@ sealed interface PrivacyDecision {
             is AmbiguousConservativeMask -> true
             else -> false
         }
+
+    /**
+     * Determines whether a specific detected face must be masked under this privacy decision.
+     * Delegates to [PrivacyPolicy.shouldMaskFace].
+     */
+    fun shouldMaskFace(
+        face: DetectedFace,
+        hasObservedOptOutInSession: Boolean = false,
+        mode: PrivacyMode = PrivacyMode.OPT_OUT_ONLY
+    ): Boolean = PrivacyPolicy.shouldMaskFace(face, this, hasObservedOptOutInSession, mode)
 
     /**
      * Resolves the exact subset of [faces] that must be masked given this [PrivacyDecision],
@@ -141,29 +156,8 @@ sealed interface PrivacyDecision {
         hasSessionStickyOptOut: Boolean = false
     ): List<DetectedFace> {
         if (faces.isEmpty()) return emptyList()
-
-        if (mode == PrivacyMode.ALL_FACES) {
-            return faces
-        }
-
-        return when (this) {
-            is NoOptOutSignal -> {
-                if (hasSessionStickyOptOut) faces else emptyList()
-            }
-            is AssociationSupported -> {
-                val targets = faces.filter { it.id in associatedFaceIds || it.id == faceId }
-                if (targets.isNotEmpty()) {
-                    targets
-                } else if (faces.size == 1) {
-                    faces
-                } else {
-                    faces
-                }
-            }
-            is AmbiguousConservativeMask -> faces
-            is OptOutSignalHold -> faces
-            is OptOutDetectedUnverified -> faces
-            is BleUnavailable -> faces
+        return faces.filter { face ->
+            PrivacyPolicy.shouldMaskFace(face, this, hasSessionStickyOptOut, mode)
         }
     }
 

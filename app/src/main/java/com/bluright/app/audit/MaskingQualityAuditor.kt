@@ -112,7 +112,7 @@ object MaskingQualityAuditor {
 
         // Conservative fail-safe audit: if decision required masking, verify masking was applied
         val auditStatus = when {
-            !isMasked && decision !is PrivacyDecision.NoOptOutSignal -> {
+            !isMasked && decision.isOptOutActive -> {
                 flags.add("AUDIT_FAILED_UNMASKED_FACES_UNDER_OPT_OUT")
                 MaskingAuditStatus.AUDIT_INSUFFICIENT_COVERAGE_FLAGGED
             }
