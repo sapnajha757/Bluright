@@ -1,6 +1,7 @@
 package com.bluright.app.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -16,6 +17,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -40,9 +42,11 @@ import kotlin.math.max
 @Composable
 fun FaceBlurOverlay(
     faces: List<DetectedFace>,
+    unmaskedFaces: List<DetectedFace> = emptyList(),
     frameAspectRatio: Float,
     blurStyle: BlurStyle,
     isFailClosedBlackoutActive: Boolean = false,
+    onFaceClick: ((DetectedFace) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -73,7 +77,27 @@ fun FaceBlurOverlay(
             TransformationInfo(sw, sh, ox, oy)
         }
 
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        val tapModifier = if (onFaceClick != null) {
+            Modifier.pointerInput(faces, unmaskedFaces, scaledW, scaledH, offX, offY) {
+                detectTapGestures { tapOffset ->
+                    val allFaces = faces + unmaskedFaces
+                    val clicked = allFaces.firstOrNull { face ->
+                        val expanded = face.expandedAdaptive()
+                        val boxLeft = expanded.normLeft * scaledW + offX
+                        val boxTop = expanded.normTop * scaledH + offY
+                        val boxWidth = expanded.normWidth * scaledW
+                        val boxHeight = expanded.normHeight * scaledH
+                        tapOffset.x in boxLeft..(boxLeft + boxWidth) &&
+                            tapOffset.y in boxTop..(boxTop + boxHeight)
+                    }
+                    if (clicked != null) {
+                        onFaceClick(clicked)
+                    }
+                }
+            }
+        } else Modifier
+
+        Canvas(modifier = Modifier.fillMaxSize().then(tapModifier)) {
             if (isFailClosedBlackoutActive && faces.isEmpty()) {
                 // Render fail-closed blackout shield over preview
                 drawRect(
@@ -164,6 +188,29 @@ fun FaceBlurOverlay(
 
                 // Privacy Status Badge above the face
                 drawFaceBadge(
+                    faceRect = faceRect,
+                    confidence = face.confidence,
+                    textMeasurer = textMeasurer
+                )
+            }
+
+            // Unmasked detected faces (e.g. operator or bystander with NO opt-out request)
+            for (face in unmaskedFaces) {
+                val boxLeft = face.normLeft * scaledW + offX
+                val boxTop = face.normTop * scaledH + offY
+                val boxWidth = face.normWidth * scaledW
+                val boxHeight = face.normHeight * scaledH
+
+                val faceRect = Rect(
+                    offset = Offset(boxLeft, boxTop),
+                    size = Size(boxWidth, boxHeight)
+                )
+
+                // Render subtle corner reticle without privacy blur
+                drawCornerBrackets(faceRect, TealAccent.copy(alpha = 0.6f))
+
+                // Clear Face Badge
+                drawClearFaceBadge(
                     faceRect = faceRect,
                     confidence = face.confidence,
                     textMeasurer = textMeasurer
@@ -395,6 +442,54 @@ private fun DrawScope.drawFaceBadge(
     )
 
     // Badge Text
+    drawText(
+        textMeasurer = textMeasurer,
+        text = label,
+        style = textStyle,
+        topLeft = Offset(badgeLeft + 8f, badgeTop + 4f)
+    )
+}
+
+/**
+ * Renders a subtle "CLEAR • XX%" badge above detected faces that do not require privacy masking.
+ */
+private fun DrawScope.drawClearFaceBadge(
+    faceRect: Rect,
+    confidence: Float,
+    textMeasurer: TextMeasurer
+) {
+    val confPercent = (confidence * 100).toInt().coerceIn(1, 99)
+    val label = "CLEAR $confPercent%"
+
+    val textStyle = TextStyle(
+        color = TealAccent,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.SemiBold
+    )
+    val textLayout = textMeasurer.measure(label, textStyle)
+
+    val badgeW = textLayout.size.width + 16f
+    val badgeH = textLayout.size.height + 8f
+
+    val badgeLeft = (faceRect.left + (faceRect.width - badgeW) / 2f).coerceAtLeast(8f)
+    val badgeTop = (faceRect.top - badgeH - 6f).coerceAtLeast(8f)
+
+    drawRoundRect(
+        color = NavyDarkBackground.copy(alpha = 0.85f),
+        topLeft = Offset(badgeLeft, badgeTop),
+        size = Size(badgeW, badgeH),
+        cornerRadius = CornerRadius(8f, 8f),
+        style = Fill
+    )
+
+    drawRoundRect(
+        color = TealAccent.copy(alpha = 0.6f),
+        topLeft = Offset(badgeLeft, badgeTop),
+        size = Size(badgeW, badgeH),
+        cornerRadius = CornerRadius(8f, 8f),
+        style = Stroke(width = 1f)
+    )
+
     drawText(
         textMeasurer = textMeasurer,
         text = label,

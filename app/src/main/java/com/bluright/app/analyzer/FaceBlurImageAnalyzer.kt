@@ -67,6 +67,7 @@ class FaceBlurImageAnalyzer(
     // Smoothed faces cache to prevent 1-frame drop flicker
     private var cachedSmoothedFaces = listOf<DetectedFace>()
     private var cachedFacesExpiryMs = 0L
+    private var nextFaceTrackerId = 1L
 
     private val detectorHelper = FaceDetectorHelper(
         context = context,
@@ -206,29 +207,33 @@ class FaceBlurImageAnalyzer(
             ?: latestUprightBitmap
 
         if (faces.isNotEmpty()) {
-            // Smooth detected faces against previously cached faces to eliminate jitter
+            // Smooth detected faces against previously cached faces to eliminate jitter and maintain persistent IDs
             val smoothedFaces = if (cachedSmoothedFaces.isNotEmpty()) {
+                val remainingPrev = cachedSmoothedFaces.toMutableList()
                 faces.map { newFace ->
                     // Find closest previous face by center distance
                     val newCenterX = (newFace.normLeft + newFace.normRight) / 2f
                     val newCenterY = (newFace.normTop + newFace.normBottom) / 2f
 
-                    val closestMatch = cachedSmoothedFaces.minByOrNull { prevFace ->
+                    val bestPrevMatch = remainingPrev.map { prevFace ->
                         val prevCenterX = (prevFace.normLeft + prevFace.normRight) / 2f
                         val prevCenterY = (prevFace.normTop + prevFace.normBottom) / 2f
                         val dx = newCenterX - prevCenterX
                         val dy = newCenterY - prevCenterY
-                        dx * dx + dy * dy
-                    }
+                        val distSq = dx * dx + dy * dy
+                        Pair(prevFace, distSq)
+                    }.filter { it.second <= 0.08f }.minByOrNull { it.second }
 
-                    if (closestMatch != null) {
-                        newFace.lerpWith(closestMatch, alpha = 0.45f)
+                    // Only apply LERP smoothing if within reasonable tracking distance (distSq <= 0.08f)
+                    if (bestPrevMatch != null) {
+                        remainingPrev.remove(bestPrevMatch.first)
+                        newFace.lerpWith(bestPrevMatch.first, alpha = 0.45f).copy(id = bestPrevMatch.first.id)
                     } else {
-                        newFace
+                        newFace.copy(id = nextFaceTrackerId++)
                     }
                 }
             } else {
-                faces
+                faces.map { it.copy(id = nextFaceTrackerId++) }
             }
 
             cachedSmoothedFaces = smoothedFaces

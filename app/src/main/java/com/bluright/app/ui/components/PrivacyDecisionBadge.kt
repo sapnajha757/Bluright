@@ -62,20 +62,35 @@ fun PrivacyDecisionBadge(
             )
         }
         is PrivacyDecision.AmbiguousConservativeMask -> {
+            val label = if (decision.visibleFacesCount > 1) {
+                "LOW CONFIDENCE • ALL BLURRED (TAP TO SELECT)"
+            } else {
+                "LOW CONFIDENCE • SAFE MODE ACTIVE"
+            }
             Quad(
-                "AMBIGUOUS • CONSERVATIVE MASK",
+                label,
                 "${decision.strongestRssi} dBm",
                 PrivacyWarning,
                 Icons.Default.Shield
             )
         }
         is PrivacyDecision.AssociationSupported -> {
-            Quad(
-                "OPT-OUT ASSOCIATED",
-                "${decision.rssi} dBm • ${(decision.confidenceScore * 100).toInt()}%",
-                CyanPrimary,
-                Icons.Default.Shield
-            )
+            val confPct = (decision.confidenceScore * 100).toInt()
+            if (decision.isHighConfidence) {
+                Quad(
+                    "HIGH CONFIDENCE • SPECIFIC BLUR",
+                    "${decision.rssi} dBm • $confPct%",
+                    CyanPrimary,
+                    Icons.Default.Shield
+                )
+            } else {
+                Quad(
+                    "MEDIUM CONFIDENCE • LIKELY FACE",
+                    "WARNING • ${decision.rssi} dBm • $confPct%",
+                    PrivacyWarning,
+                    Icons.Default.Shield
+                )
+            }
         }
         is PrivacyDecision.OptOutSignalHold -> {
             Quad(

@@ -7,6 +7,7 @@ import android.util.Log
 import com.bluright.app.crypto.PrivacyManifestSigner
 import com.bluright.app.model.BlurStyle
 import com.bluright.app.model.DetectedFace
+import com.bluright.app.model.PrivacyMode
 import com.bluright.app.privacy.PrivacyDecision
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,19 @@ class PrivacyExportCoordinator(
     private var currentStyle = BlurStyle.PIXELATE
 
     @Volatile
-    private var hasObservedOptOutInSession: Boolean = false
+    var privacyMode: PrivacyMode = PrivacyMode.OPT_OUT_ONLY
+
+    var isAllFacesMode: Boolean
+        get() = privacyMode == PrivacyMode.ALL_FACES
+        set(value) {
+            privacyMode = if (value) PrivacyMode.ALL_FACES else PrivacyMode.OPT_OUT_ONLY
+        }
+
+    val hasObservedOptOutInSession: Boolean
+        get() = _hasObservedOptOutInSession
+
+    @Volatile
+    private var _hasObservedOptOutInSession: Boolean = false
 
     private var currentVideoFile: File? = null
     private var currentManifestFile: File? = null
@@ -87,7 +100,7 @@ class PrivacyExportCoordinator(
             sessionStartTimeMs = System.currentTimeMillis()
             sessionStartUptimeUs = SystemClock.uptimeMillis() * 1000L
             frameCounter = 0
-            hasObservedOptOutInSession = false
+            _hasObservedOptOutInSession = false
 
             _exportState.value = ExportState.Recording(
                 durationMs = 0L,
@@ -127,7 +140,7 @@ class PrivacyExportCoordinator(
                 val presentationTimeUs = (SystemClock.uptimeMillis() * 1000L) - sessionStartUptimeUs
 
                 if (decision.isOptOutActive) {
-                    hasObservedOptOutInSession = true
+                    _hasObservedOptOutInSession = true
                 }
 
                 // Create a mutable copy of the bitmap to burn masks in-place
@@ -136,10 +149,16 @@ class PrivacyExportCoordinator(
                 var maskedFacesCount = 0
                 var isBlackedOut = false
 
-                if (faces.isNotEmpty()) {
-                    // Faces detected -> Burn masks onto faces
-                    maskedFacesCount = PrivacyMaskRenderer.burnMask(mutableFrame, faces, currentStyle)
-                } else if (decision.isOptOutActive || hasObservedOptOutInSession) {
+                val facesToMask = decision.resolveFacesToMask(
+                    faces = faces,
+                    mode = privacyMode,
+                    hasSessionStickyOptOut = _hasObservedOptOutInSession
+                )
+
+                if (facesToMask.isNotEmpty()) {
+                    // Burn masks onto faces requiring privacy protection
+                    maskedFacesCount = PrivacyMaskRenderer.burnMask(mutableFrame, facesToMask, currentStyle)
+                } else if (faces.isEmpty() && (decision.isOptOutActive || _hasObservedOptOutInSession)) {
                     // FAIL-CLOSED PRIVACY POLICY (DEF-01):
                     // Opt-out signal is active or was observed in this session, but zero faces detected.
                     // Visual coverage cannot be trusted (face detector false negative risk).
@@ -155,7 +174,7 @@ class PrivacyExportCoordinator(
                     )
                     isBlackedOut = true
                 } else {
-                    // Default / no opt-out signal ever observed and 0 faces: normal unmasked frame
+                    // Default / no opt-out signal ever observed and no faces requiring mask: normal unmasked frame
                 }
 
                 // Send the masked frame to the hardware video encoder
@@ -265,7 +284,7 @@ class PrivacyExportCoordinator(
      */
     @Synchronized
     fun cancelRecording() {
-        hasObservedOptOutInSession = false
+        _hasObservedOptOutInSession = false
         activeEncoder?.cleanup()
         activeEncoder = null
         currentVideoFile?.delete()

@@ -454,4 +454,149 @@ class FailClosedAdversarialRegressionTest {
         assertEquals(3, receiptCollector.getBlackedOutFramesCount())
         assertEquals(0, receiptCollector.getUnmaskedFramesCount())
     }
+
+    @Test
+    fun testOrdinaryFace_noOptOut_recordsUnmaskedReceipt() {
+        val operatorFace = DetectedFace(100L, 0.3f, 0.2f, 0.7f, 0.6f, 0.95f)
+        val scannerState = BleScannerState.Scanning(emptyList())
+
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(operatorFace),
+            scannerState = scannerState,
+            currentTimeMs = 1000L
+        )
+
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        val facesToMask = decision.resolveFacesToMask(
+            faces = listOf(operatorFace),
+            isAllFacesMode = false,
+            hasSessionStickyOptOut = false
+        )
+        assertTrue("Ordinary face must not be masked without an active opt-out beacon", facesToMask.isEmpty())
+
+        receiptCollector.recordFrame(
+            frameIndex = 0,
+            timestampMs = 1000L,
+            faces = listOf(operatorFace),
+            maskedFacesCount = facesToMask.size,
+            decision = decision,
+            isBlackedOut = false
+        )
+
+        assertEquals(1, receiptCollector.getTotalFrames())
+        assertEquals(0, receiptCollector.getMaskedFramesCount())
+        assertEquals(1, receiptCollector.getUnmaskedFramesCount())
+        assertEquals(0, receiptCollector.getBlackedOutFramesCount())
+        assertEquals(0, receiptCollector.getOptOutEncounterCount())
+    }
+
+    @Test
+    fun testConfidentlyAssociatedFace_masksOnlyOptOutTarget() {
+        val optOutFace = DetectedFace(1L, 0.1f, 0.2f, 0.4f, 0.6f, 0.92f)
+        val bystanderFace = DetectedFace(2L, 0.6f, 0.2f, 0.9f, 0.6f, 0.89f)
+
+        // Frame with strong beacon evaluated against single target line-of-sight
+        val observation = BleObservation(byteArrayOf(1, 2, 3), -48, 1000L)
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(optOutFace),
+            scannerState = BleScannerState.Scanning(listOf(observation)),
+            currentTimeMs = 1000L
+        )
+        assertTrue(decision is PrivacyDecision.AssociationSupported)
+
+        // Resolve masking for scene containing both faces
+        val facesToMask = decision.resolveFacesToMask(
+            faces = listOf(optOutFace, bystanderFace),
+            isAllFacesMode = false,
+            hasSessionStickyOptOut = false
+        )
+
+        assertEquals(1, facesToMask.size)
+        assertEquals(1L, facesToMask.first().id)
+
+        receiptCollector.recordFrame(
+            frameIndex = 0,
+            timestampMs = 1000L,
+            faces = listOf(optOutFace, bystanderFace),
+            maskedFacesCount = facesToMask.size,
+            decision = decision,
+            isBlackedOut = false
+        )
+
+        assertEquals(1, receiptCollector.getTotalFrames())
+        assertEquals(1, receiptCollector.getMaskedFramesCount())
+        assertEquals(1, receiptCollector.getTotalFacesMasked())
+        assertEquals(0, receiptCollector.getUnmaskedFramesCount())
+    }
+
+    @Test
+    fun testAmbiguousAssociation_masksAllFacesConservatively() {
+        val faceA = DetectedFace(1L, 0.1f, 0.2f, 0.4f, 0.6f, 0.90f)
+        val faceB = DetectedFace(2L, 0.6f, 0.2f, 0.9f, 0.6f, 0.90f)
+
+        val observation = BleObservation(byteArrayOf(1, 2, 3), -55, 1000L)
+        val decision = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(faceA, faceB),
+            scannerState = BleScannerState.Scanning(listOf(observation)),
+            currentTimeMs = 1000L
+        )
+
+        assertTrue(decision is PrivacyDecision.AmbiguousConservativeMask)
+        assertTrue(decision.requiresMaskingAllFaces)
+
+        val facesToMask = decision.resolveFacesToMask(listOf(faceA, faceB))
+        assertEquals(2, facesToMask.size)
+
+        receiptCollector.recordFrame(
+            frameIndex = 0,
+            timestampMs = 1000L,
+            faces = listOf(faceA, faceB),
+            maskedFacesCount = facesToMask.size,
+            decision = decision,
+            isBlackedOut = false
+        )
+
+        assertEquals(2, receiptCollector.getTotalFacesMasked())
+    }
+
+    @Test
+    fun testSessionStickyOptOut_preservesMaskingAfterSignalLoss() {
+        val face = DetectedFace(1L, 0.3f, 0.3f, 0.6f, 0.6f, 0.95f)
+
+        // t = 1000ms: opt-out signal active
+        val observation = BleObservation(byteArrayOf(5, 5, 5), -45, 1000L)
+        val dec1 = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(listOf(observation)),
+            currentTimeMs = 1000L
+        )
+        assertTrue(dec1.isOptOutActive)
+
+        // t = 10000ms: beacon vanished, hold expired (>6000ms)
+        val dec2 = associationEngine.evaluatePrivacyDecision(
+            faces = listOf(face),
+            scannerState = BleScannerState.Scanning(emptyList()),
+            currentTimeMs = 10000L
+        )
+        assertTrue(dec2 is PrivacyDecision.NoOptOutSignal)
+
+        // Session-sticky fail-closed: hasObservedOptOutInSession is true
+        val facesToMask = dec2.resolveFacesToMask(
+            faces = listOf(face),
+            isAllFacesMode = false,
+            hasSessionStickyOptOut = true
+        )
+        assertEquals("Session-sticky opt-out must continue masking face even after beacon loss", 1, facesToMask.size)
+
+        receiptCollector.recordFrame(
+            frameIndex = 1,
+            timestampMs = 10000L,
+            faces = listOf(face),
+            maskedFacesCount = facesToMask.size,
+            decision = dec2,
+            isBlackedOut = false
+        )
+        assertEquals(1, receiptCollector.getMaskedFramesCount())
+        assertEquals(0, receiptCollector.getUnmaskedFramesCount())
+    }
 }

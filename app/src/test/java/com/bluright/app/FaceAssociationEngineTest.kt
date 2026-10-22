@@ -7,6 +7,7 @@ import com.bluright.app.model.DetectedFace
 import com.bluright.app.privacy.FaceAssociationEngine
 import com.bluright.app.privacy.PrivacyDecision
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -36,7 +37,108 @@ class FaceAssociationEngineTest {
 
         assertTrue(decision is PrivacyDecision.NoOptOutSignal)
         assertEquals(1, (decision as PrivacyDecision.NoOptOutSignal).visibleFacesCount)
+        // With 0 opt-out signals, ordinary faces are not masked unless all-faces mode is active
+        assertFalse(decision.requiresMaskingAllFaces)
+        assertTrue(decision.resolveFacesToMask(faces).isEmpty())
+    }
+
+    @Test
+    fun testOrdinaryFace_noOptOut_noPriorSession_notMasked() {
+        val operatorFace = createDummyFace(100L)
+        val decision = engine.evaluatePrivacyDecision(listOf(operatorFace), BleScannerState.Scanning(emptyList()))
+
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+        val facesToMask = decision.resolveFacesToMask(
+            faces = listOf(operatorFace),
+            isAllFacesMode = false,
+            hasSessionStickyOptOut = false
+        )
+        // Verified: Camera operator face is not masked solely because face detection found it
+        assertTrue("Ordinary face must not be masked without opt-out", facesToMask.isEmpty())
+    }
+
+    @Test
+    fun testAssociationSupported_masksOnlyAssociatedFace() {
+        val faceA = createDummyFace(1L)
+        val faceB = createDummyFace(2L)
+        // When exactly 1 face was present during evaluation:
+        val decision = engine.evaluatePrivacyDecision(
+            faces = listOf(faceA),
+            scannerState = BleScannerState.Scanning(listOf(createObservation(byteArrayOf(0xA, 0xB), -45)))
+        )
+        assertTrue(decision is PrivacyDecision.AssociationSupported)
+        assertFalse("AssociationSupported does not mask all faces indiscriminately", decision.requiresMaskingAllFaces)
+
+        // When multiple faces appear later, only the associated face (faceA) is masked:
+        val resolved = decision.resolveFacesToMask(listOf(faceA, faceB))
+        assertEquals(1, resolved.size)
+        assertEquals(1L, resolved.first().id)
+    }
+
+    @Test
+    fun testAmbiguousAssociation_masksAllFacesConservatively() {
+        val faceA = createDummyFace(1L)
+        val faceB = createDummyFace(2L)
+        val decision = engine.evaluatePrivacyDecision(
+            faces = listOf(faceA, faceB),
+            scannerState = BleScannerState.Scanning(listOf(createObservation(byteArrayOf(0xA, 0xB), -50)))
+        )
+        assertTrue(decision is PrivacyDecision.AmbiguousConservativeMask)
         assertTrue(decision.requiresMaskingAllFaces)
+
+        val resolved = decision.resolveFacesToMask(listOf(faceA, faceB))
+        assertEquals(2, resolved.size)
+    }
+
+    @Test
+    fun testSessionStickyOptOut_preservesMaskingAfterSignalLoss() {
+        val face = createDummyFace(1L)
+        // Beacon disappears after being observed, scanner reports 0 opt-outs
+        val decision = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()))
+        assertTrue(decision is PrivacyDecision.NoOptOutSignal)
+
+        // With session-sticky flag set (hasObservedOptOutInSession = true), conservative protection is locked in
+        val resolved = decision.resolveFacesToMask(
+            faces = listOf(face),
+            isAllFacesMode = false,
+            hasSessionStickyOptOut = true
+        )
+        assertEquals(1, resolved.size)
+        assertEquals(1L, resolved.first().id)
+    }
+
+    @Test
+    fun testAllFacesMode_masksAllFacesEvenWithNoOptOut() {
+        val face = createDummyFace(1L)
+        val decision = engine.evaluatePrivacyDecision(listOf(face), BleScannerState.Scanning(emptyList()))
+
+        val resolved = decision.resolveFacesToMask(
+            faces = listOf(face),
+            isAllFacesMode = true,
+            hasSessionStickyOptOut = false
+        )
+        assertEquals(1, resolved.size)
+    }
+
+    @Test
+    fun testFaceGeometry_reasonableMaskBounds_coversHeadWithoutExploding() {
+        val face = DetectedFace(
+            id = 1L,
+            normLeft = 0.35f,
+            normTop = 0.30f,
+            normRight = 0.65f,
+            normBottom = 0.70f,
+            confidence = 0.90f
+        )
+        val expanded = face.expandedAdaptive()
+        // Must safely cover head and chin
+        assertTrue(expanded.normLeft < face.normLeft)
+        assertTrue(expanded.normRight > face.normRight)
+        assertTrue(expanded.normTop < face.normTop)
+        assertTrue(expanded.normBottom > face.normBottom)
+        // Must not explode past 85% of screen width for a 30% width face
+        assertTrue("Expanded width must not balloon excessively", expanded.normWidth < 0.60f)
+        assertTrue("Expanded height must not balloon excessively", expanded.normHeight < 0.70f)
     }
 
     @Test

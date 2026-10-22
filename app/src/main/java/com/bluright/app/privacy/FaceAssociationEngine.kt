@@ -27,11 +27,28 @@ class FaceAssociationEngine(
     @Volatile
     private var lastObservedTokenHex: String? = null
 
+    // Tracked associations between active opt-out token hexes and visual face IDs
+    private val activeAssociations = mutableMapOf<String, Long>()
+
     @Synchronized
     fun resetHoldState() {
         lastOptOutObservedTimeMs = 0L
         lastObservedTokenHex = null
+        activeAssociations.clear()
     }
+
+    /**
+     * Explicitly associates a visible face with the active opt-out beacon.
+     * Allows the user or camera operator to tap a face on screen when multiple faces are present.
+     */
+    @Synchronized
+    fun manuallyAssociateFace(faceId: Long, tokenHex: String? = null) {
+        val targetToken = tokenHex ?: lastObservedTokenHex ?: MANUAL_BEACON_KEY
+        activeAssociations[targetToken] = faceId
+    }
+
+    @Synchronized
+    fun getAssociatedFaceIds(): Set<Long> = activeAssociations.values.toSet()
 
     /**
      * Synthesizes current face detections and BLE observations into a deterministic PrivacyDecision.
@@ -99,6 +116,12 @@ class FaceAssociationEngine(
         lastOptOutObservedTimeMs = currentTimeMs
         lastObservedTokenHex = strongestBeacon.tokenHex
 
+        // If a manual association was queued before beacon observation, bind it now
+        val pendingManual = activeAssociations.remove(MANUAL_BEACON_KEY)
+        if (pendingManual != null) {
+            activeAssociations[strongestBeacon.tokenHex] = pendingManual
+        }
+
         // 3. Opt-out beacon detected, but camera sees zero faces
         if (faces.isEmpty()) {
             return PrivacyDecision.OptOutDetectedUnverified(
@@ -107,52 +130,142 @@ class FaceAssociationEngine(
             )
         }
 
-        // 4. Multiple faces OR multiple beacons present -> High Ambiguity
-        // Fail-safe conservative protocol: Blur ALL visible faces
-        if (faces.size > 1 || observations.size > 1) {
-            val ambiguityReason = when {
-                faces.size > 1 && observations.size > 1 ->
-                    "Multiple faces (${faces.size}) and multiple beacons (${observations.size}) present. Spatial ambiguity."
-                faces.size > 1 ->
-                    "Multiple faces (${faces.size}) present with 1 opt-out beacon. Cannot discern which individual opted out."
-                else ->
-                    "Multiple opt-out beacons (${observations.size}) detected near single face."
-            }
-
-            return PrivacyDecision.AmbiguousConservativeMask(
-                reason = ambiguityReason,
-                visibleFacesCount = faces.size,
-                observationsCount = observations.size,
-                strongestRssi = strongestBeacon.rssi
-            )
+        // Prune tracked associations: retain only those where token remains active
+        val currentTokenHexes = observations.map { it.tokenHex }.toSet()
+        activeAssociations.entries.retainAll { (token, _) ->
+            token in currentTokenHexes
         }
 
-        // 5. Exactly 1 face and 1 beacon: Evaluate signal strength
-        val singleFace = faces.first()
-        val isStrongProximity = strongestBeacon.rssi >= BleOptOutConstants.RSSI_IMMEDIATE_THRESHOLD
+        // 4. Single-Face Association Evaluation
+        if (faces.size == 1) {
+            val singleFace = faces.first()
+            if (observations.size == 1) {
+                val singleBeacon = observations.first()
+                val isStrongProximity = singleBeacon.rssi >= BleOptOutConstants.RSSI_IMMEDIATE_THRESHOLD
+                val confidence = calculateConfidence(singleBeacon.rssi, singleFace.confidence)
+                return if (isStrongProximity && confidence >= 0.50f) {
+                    activeAssociations[singleBeacon.tokenHex] = singleFace.id
+                    val disclaimers = listOf(
+                        if (confidence >= 0.70f)
+                            "High confidence heuristic proximity match (single target line-of-sight)"
+                        else
+                            "Medium confidence proximity match (likely face, proximity warning)",
+                        "Radio multipath and obstruction can alter RSSI by ±15 dBm",
+                        "Does not constitute legal or cryptographic identity proof"
+                    )
+                    PrivacyDecision.AssociationSupported(
+                        faceId = singleFace.id,
+                        tokenHex = singleBeacon.tokenHex,
+                        rssi = singleBeacon.rssi,
+                        confidenceScore = confidence,
+                        disclaimers = disclaimers,
+                        associatedFaceIds = setOf(singleFace.id)
+                    )
+                } else {
+                    activeAssociations.remove(singleBeacon.tokenHex)
+                    PrivacyDecision.AmbiguousConservativeMask(
+                        reason = if (confidence < 0.50f) {
+                            "Low association confidence (${(confidence * 100).toInt()}%). Safe mode active."
+                        } else {
+                            "Opt-out signal is distant or attenuated (${singleBeacon.rssi} dBm). Line-of-sight unconfirmed."
+                        },
+                        visibleFacesCount = 1,
+                        observationsCount = 1,
+                        strongestRssi = singleBeacon.rssi
+                    )
+                }
+            } else {
+                // Multiple beacons near single face -> High ambiguity
+                return PrivacyDecision.AmbiguousConservativeMask(
+                    reason = "Multiple opt-out beacons (${observations.size}) detected near single face.",
+                    visibleFacesCount = 1,
+                    observationsCount = observations.size,
+                    strongestRssi = strongestBeacon.rssi
+                )
+            }
+        }
 
-        return if (isStrongProximity) {
-            // Signal is strong (< 1.5m estimated) and only one person is in view
-            PrivacyDecision.AssociationSupported(
-                faceId = singleFace.id,
+        // 5. Multi-Face Scene: Evaluate if selective association is reliable
+        val matchedFaceIds = observations.mapNotNull { obs ->
+            activeAssociations[obs.tokenHex]
+        }.filter { faceId -> faces.any { it.id == faceId } }.toSet()
+
+        if (matchedFaceIds.isNotEmpty()) {
+            val primaryFaceId = matchedFaceIds.first()
+            val primaryFace = faces.first { it.id == primaryFaceId }
+            val confidence = calculateConfidence(strongestBeacon.rssi, primaryFace.confidence)
+            val disclaimers = if (confidence >= 0.70f) {
+                listOf(
+                    "High confidence tracked selective match: established line-of-sight maintained",
+                    "Non-opted-out bystanders left unmasked under OPT_OUT_ONLY policy"
+                )
+            } else {
+                listOf(
+                    "Medium confidence tracked match: likely face",
+                    "Warning: proximity estimate, keep subject in frame"
+                )
+            }
+            return PrivacyDecision.AssociationSupported(
+                faceId = primaryFaceId,
                 tokenHex = strongestBeacon.tokenHex,
                 rssi = strongestBeacon.rssi,
-                confidenceScore = calculateConfidence(strongestBeacon.rssi, singleFace.confidence),
-                disclaimers = listOf(
-                    "Heuristic proximity match (single target line-of-sight)",
-                    "Radio multipath and obstruction can alter RSSI by ±15 dBm",
-                    "Does not constitute legal or cryptographic identity proof"
-                )
-            )
-        } else {
-            // Weak signal (-65 dBm to -90 dBm): Might be someone in adjacent room or behind camera
-            PrivacyDecision.AmbiguousConservativeMask(
-                reason = "Opt-out signal is distant or attenuated (${strongestBeacon.rssi} dBm). Line-of-sight unconfirmed.",
-                visibleFacesCount = 1,
-                observationsCount = 1,
-                strongestRssi = strongestBeacon.rssi
+                confidenceScore = confidence,
+                disclaimers = disclaimers,
+                associatedFaceIds = matchedFaceIds
             )
         }
+
+        // Check if one face is clearly dominant in foreground (proximity disparity heuristic)
+        if (observations.size == 1 && strongestBeacon.rssi >= BleOptOutConstants.RSSI_IMMEDIATE_THRESHOLD) {
+            val sortedByArea = faces.sortedByDescending { it.normWidth * it.normHeight }
+            val largest = sortedByArea[0]
+            val second = sortedByArea[1]
+            val largestArea = largest.normWidth * largest.normHeight
+            val secondArea = second.normWidth * second.normHeight
+
+            if (largestArea >= 1.30f * secondArea) {
+                val confidence = calculateConfidence(strongestBeacon.rssi, largest.confidence)
+                if (confidence >= 0.50f) {
+                    activeAssociations[strongestBeacon.tokenHex] = largest.id
+                    val disclaimers = if (confidence >= 0.70f) {
+                        listOf(
+                            "High confidence foreground disparity match (dominant target)",
+                            "Tap face on screen to adjust association if needed"
+                        )
+                    } else {
+                        listOf(
+                            "Medium confidence foreground match: likely face",
+                            "Warning: proximity estimate, tap face to confirm"
+                        )
+                    }
+                    return PrivacyDecision.AssociationSupported(
+                        faceId = largest.id,
+                        tokenHex = strongestBeacon.tokenHex,
+                        rssi = strongestBeacon.rssi,
+                        confidenceScore = confidence,
+                        disclaimers = disclaimers,
+                        associatedFaceIds = setOf(largest.id)
+                    )
+                }
+            }
+        }
+
+        // 6. Ambiguous Association Fallback (Conservative Privacy Fail-Safe)
+        val ambiguityReason = when {
+            faces.size > 1 && observations.size > 1 ->
+                "Multiple faces (${faces.size}) and multiple beacons (${observations.size}) present. Low association confidence. Safe mode active."
+            faces.size > 1 ->
+                "Multiple faces (${faces.size}) present with 1 opt-out beacon. Low association confidence. Safe mode active."
+            else ->
+                "Low association confidence. All faces masked under safe mode."
+        }
+
+        return PrivacyDecision.AmbiguousConservativeMask(
+            reason = ambiguityReason,
+            visibleFacesCount = faces.size,
+            observationsCount = observations.size,
+            strongestRssi = strongestBeacon.rssi
+        )
     }
 
     private fun calculateConfidence(rssi: Int, faceDetectionConfidence: Float): Float {
@@ -165,5 +278,6 @@ class FaceAssociationEngine(
 
     companion object {
         const val DEFAULT_SIGNAL_LOSS_HOLD_MS = 6000L
+        private const val MANUAL_BEACON_KEY = "MANUAL_BEACON"
     }
 }

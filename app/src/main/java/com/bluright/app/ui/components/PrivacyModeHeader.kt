@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -32,10 +34,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bluright.app.model.CameraLens
+import com.bluright.app.model.PrivacyMode
 import com.bluright.app.ui.theme.CyanPrimary
 import com.bluright.app.ui.theme.NavyCard
 import com.bluright.app.ui.theme.NavyDarkSurface
 import com.bluright.app.ui.theme.PrivacySafe
+import com.bluright.app.ui.theme.PrivacyWarning
 import com.bluright.app.ui.theme.TealAccent
 import com.bluright.app.ui.theme.TextMuted
 import com.bluright.app.ui.theme.TextPrimary
@@ -46,9 +50,11 @@ fun PrivacyModeHeader(
     currentLens: CameraLens,
     isTorchOn: Boolean,
     isBroadcasting: Boolean,
+    privacyMode: PrivacyMode = PrivacyMode.OPT_OUT_ONLY,
     onToggleLens: () -> Unit,
     onToggleTorch: () -> Unit,
     onOpenBroadcastDialog: () -> Unit,
+    onTogglePrivacyMode: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -108,8 +114,33 @@ fun PrivacyModeHeader(
                 }
             }
 
-            // Top action buttons (Transmitter, Lens switch, Torch)
+            // Top action buttons (Privacy Mode toggle, Transmitter, Lens switch, Torch)
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Privacy Mode Toggle (OPT_OUT_ONLY vs ALL_FACES)
+                val isAllFaces = privacyMode == PrivacyMode.ALL_FACES
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(NavyCard.copy(alpha = 0.85f))
+                        .border(
+                            1.dp,
+                            if (isAllFaces) CyanPrimary else TealAccent.copy(alpha = 0.4f),
+                            CircleShape
+                        )
+                        .clickable { onTogglePrivacyMode() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isAllFaces) Icons.Default.Lock else Icons.Default.Shield,
+                        contentDescription = "Toggle Privacy Mode (${privacyMode.displayName})",
+                        tint = if (isAllFaces) CyanPrimary else TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
                 // Opt-Out Beacon Transmitter Modal Button
                 Box(
                     modifier = Modifier
@@ -196,15 +227,16 @@ fun PrivacyModeHeader(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val isAllFaces = privacyMode == PrivacyMode.ALL_FACES
                 Text(
-                    text = "ON-DEVICE MASK OVERLAY ACTIVE",
-                    color = CyanPrimary,
+                    text = if (isAllFaces) "PRIVACY MODE: ALL FACES (CONSERVATIVE)" else "PRIVACY MODE: OPT-OUT ONLY (SELECTIVE)",
+                    color = if (isAllFaces) PrivacyWarning else CyanPrimary,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.6.sp
                 )
                 Text(
-                    text = "Export Pipeline in Phase 2",
+                    text = if (isAllFaces) "MASKING ALL FACES" else "BYSTANDERS UNMASKED",
                     color = TextMuted,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Normal

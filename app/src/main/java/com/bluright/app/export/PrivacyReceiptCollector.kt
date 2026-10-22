@@ -83,7 +83,9 @@ class PrivacyReceiptCollector {
             }
             is PrivacyDecision.NoOptOutSignal -> {
                 Triple(
-                    if (isBlackedOut) "FAIL_CLOSED_FULL_FRAME_BLACKOUT" else "DEFAULT_CAMERA_MASKED",
+                    if (isBlackedOut) "FAIL_CLOSED_FULL_FRAME_BLACKOUT"
+                    else if (maskedFacesCount > 0) "DEFAULT_CAMERA_MASKED"
+                    else "NO_OPT_OUT_CLEAR",
                     0,
                     null
                 )

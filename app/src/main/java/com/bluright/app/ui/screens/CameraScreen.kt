@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
 import android.widget.Toast
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -52,6 +53,7 @@ import com.bluright.app.export.PrivacyExportCoordinator
 import com.bluright.app.model.BlurStyle
 import com.bluright.app.model.CameraLens
 import com.bluright.app.model.DetectionState
+import com.bluright.app.model.PrivacyMode
 import com.bluright.app.privacy.FaceAssociationEngine
 import com.bluright.app.ui.components.CameraControls
 import com.bluright.app.ui.components.ExportSuccessDialog
@@ -78,6 +80,7 @@ fun CameraScreen(
     var currentLens by remember { mutableStateOf(CameraLens.BACK) }
     var blurStyle by remember { mutableStateOf(BlurStyle.PIXELATE) }
     var isTorchOn by remember { mutableStateOf(false) }
+    var privacyMode by remember { mutableStateOf(PrivacyMode.OPT_OUT_ONLY) }
     var activeCamera by remember { mutableStateOf<Camera?>(null) }
     var showBroadcastDialog by remember { mutableStateOf(false) }
 
@@ -150,6 +153,7 @@ fun CameraScreen(
                 cameraProvider.unbindAll()
 
                 val preview = Preview.Builder()
+                    .setTargetAspectRatio(AspectRatio.RATIO_16_9)
                     .build()
                     .also {
                         it.setSurfaceProvider(pView.surfaceProvider)
@@ -158,6 +162,7 @@ fun CameraScreen(
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setTargetAspectRatio(AspectRatio.RATIO_16_9)
                     .build()
                     .also {
                         it.setAnalyzer(analysisExecutor, analyzer)
@@ -213,8 +218,23 @@ fun CameraScreen(
                 associationEngine.evaluatePrivacyDecision(faces, bleScannerState)
             }
 
+            // Determine faces that require masking based on privacy decision, active PrivacyMode (default OPT_OUT_ONLY),
+            // and session-sticky opt-out history
+            val facesToMask = remember(faces, privacyDecision, privacyMode, exportCoordinator.hasObservedOptOutInSession) {
+                privacyDecision.resolveFacesToMask(
+                    faces = faces,
+                    mode = privacyMode,
+                    hasSessionStickyOptOut = exportCoordinator.hasObservedOptOutInSession
+                )
+            }
+
+            val unmaskedFaces = remember(faces, facesToMask) {
+                if (facesToMask.isEmpty()) faces else faces.filterNot { masked -> facesToMask.any { it.id == masked.id } }
+            }
+
             // Stream frames from analyzer to Privacy Video Export Coordinator
-            LaunchedEffect(analyzer) {
+            LaunchedEffect(analyzer, privacyMode) {
+                exportCoordinator.privacyMode = privacyMode
                 analyzer.onFrameAvailable = { bitmap, detectedFaces ->
                     if (exportCoordinator.isRecording) {
                         val frameDecision = associationEngine.evaluatePrivacyDecision(detectedFaces, bleScanner.scannerState.value)
@@ -228,11 +248,17 @@ fun CameraScreen(
                 }
             }
 
+            val isFailClosedBlackout = (faces.isEmpty() && (privacyDecision.shouldApplyFailClosedBlackoutIfNoFaces || exportCoordinator.hasObservedOptOutInSession))
+
             FaceBlurOverlay(
-                faces = faces,
+                faces = facesToMask,
+                unmaskedFaces = unmaskedFaces,
                 frameAspectRatio = frameAspectRatio,
                 blurStyle = blurStyle,
-                isFailClosedBlackoutActive = privacyDecision.shouldApplyFailClosedBlackoutIfNoFaces,
+                isFailClosedBlackoutActive = isFailClosedBlackout,
+                onFaceClick = { clickedFace ->
+                    associationEngine.manuallyAssociateFace(clickedFace.id)
+                },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -241,6 +267,7 @@ fun CameraScreen(
                 currentLens = currentLens,
                 isTorchOn = isTorchOn,
                 isBroadcasting = bleAdvertiserState is BleAdvertiserState.Advertising,
+                privacyMode = privacyMode,
                 onToggleLens = {
                     currentLens = currentLens.toggle()
                 },
@@ -256,6 +283,9 @@ fun CameraScreen(
                 onOpenBroadcastDialog = {
                     showBroadcastDialog = true
                 },
+                onTogglePrivacyMode = {
+                    privacyMode = if (privacyMode == PrivacyMode.OPT_OUT_ONLY) PrivacyMode.ALL_FACES else PrivacyMode.OPT_OUT_ONLY
+                },
                 modifier = Modifier.align(Alignment.TopCenter)
             )
 
@@ -266,7 +296,10 @@ fun CameraScreen(
                     .padding(top = 92.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                PrivacyStatusBadge(state = detectionState)
+                PrivacyStatusBadge(
+                    state = detectionState,
+                    maskedFacesCount = facesToMask.size
+                )
                 Spacer(modifier = Modifier.height(6.dp))
                 PrivacyDecisionBadge(
                     decision = privacyDecision,

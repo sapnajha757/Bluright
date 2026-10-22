@@ -96,7 +96,8 @@ class FaceDetectionPrivacyValidationTest {
         assertTrue(decision is PrivacyDecision.AssociationSupported)
         val supported = decision as PrivacyDecision.AssociationSupported
         assertEquals(101L, supported.faceId)
-        assertTrue(supported.requiresMaskingAllFaces)
+        assertFalse(supported.requiresMaskingAllFaces)
+        assertEquals(listOf(face), supported.resolveFacesToMask(listOf(face)))
 
         // Record to receipt collector
         receiptCollector.recordFrame(0, 1000L, listOf(face), maskedFacesCount = 1, decision = decision, isBlackedOut = false)
