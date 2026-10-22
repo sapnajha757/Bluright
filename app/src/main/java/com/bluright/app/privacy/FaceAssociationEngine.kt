@@ -21,9 +21,13 @@ import com.bluright.app.model.DetectedFace
 class FaceAssociationEngine(
     private val signalLossHoldDurationMs: Long = DEFAULT_SIGNAL_LOSS_HOLD_MS
 ) {
+    @Volatile
     private var lastOptOutObservedTimeMs: Long = 0L
+
+    @Volatile
     private var lastObservedTokenHex: String? = null
 
+    @Synchronized
     fun resetHoldState() {
         lastOptOutObservedTimeMs = 0L
         lastObservedTokenHex = null
@@ -32,6 +36,7 @@ class FaceAssociationEngine(
     /**
      * Synthesizes current face detections and BLE observations into a deterministic PrivacyDecision.
      */
+    @Synchronized
     fun evaluatePrivacyDecision(
         faces: List<DetectedFace>,
         scannerState: BleScannerState,

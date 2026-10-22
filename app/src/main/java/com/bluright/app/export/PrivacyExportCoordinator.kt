@@ -35,11 +35,15 @@ class PrivacyExportCoordinator(
 
     private var activeEncoder: PrivacyVideoEncoder? = null
     private val receiptCollector = PrivacyReceiptCollector()
+    private val exportDispatcher = Dispatchers.Default.limitedParallelism(1)
 
     private var sessionStartTimeMs = 0L
     private var sessionStartUptimeUs = 0L
     private var frameCounter = 0
     private var currentStyle = BlurStyle.PIXELATE
+
+    @Volatile
+    private var hasObservedOptOutInSession: Boolean = false
 
     private var currentVideoFile: File? = null
     private var currentManifestFile: File? = null
@@ -83,6 +87,7 @@ class PrivacyExportCoordinator(
             sessionStartTimeMs = System.currentTimeMillis()
             sessionStartUptimeUs = SystemClock.uptimeMillis() * 1000L
             frameCounter = 0
+            hasObservedOptOutInSession = false
 
             _exportState.value = ExportState.Recording(
                 durationMs = 0L,
@@ -115,11 +120,15 @@ class PrivacyExportCoordinator(
         if (!isRecording) return
         val encoder = activeEncoder ?: return
 
-        scope.launch(Dispatchers.Default) {
+        scope.launch(exportDispatcher) {
             if (!isRecording) return@launch
             try {
                 val frameIndex = frameCounter++
                 val presentationTimeUs = (SystemClock.uptimeMillis() * 1000L) - sessionStartUptimeUs
+
+                if (decision.isOptOutActive) {
+                    hasObservedOptOutInSession = true
+                }
 
                 // Create a mutable copy of the bitmap to burn masks in-place
                 val mutableFrame = bitmap.copy(Bitmap.Config.ARGB_8888, true)
@@ -130,18 +139,23 @@ class PrivacyExportCoordinator(
                 if (faces.isNotEmpty()) {
                     // Faces detected -> Burn masks onto faces
                     maskedFacesCount = PrivacyMaskRenderer.burnMask(mutableFrame, faces, currentStyle)
-                } else if (decision.isOptOutActive) {
+                } else if (decision.isOptOutActive || hasObservedOptOutInSession) {
                     // FAIL-CLOSED PRIVACY POLICY (DEF-01):
-                    // Opt-out signal is active, but zero faces detected.
+                    // Opt-out signal is active or was observed in this session, but zero faces detected.
                     // Visual coverage cannot be trusted (face detector false negative risk).
                     // Burn full-frame opaque blackout to guarantee zero pixel leakage!
+                    val reason = if (decision.isOptOutActive) {
+                        "OPT-OUT SIGNAL ACTIVE // COVERAGE UNVERIFIED"
+                    } else {
+                        "OPT-OUT OBSERVED IN SESSION // COVERAGE UNVERIFIED"
+                    }
                     PrivacyMaskRenderer.burnFullFrameBlackout(
                         mutableFrame,
-                        reason = "OPT-OUT SIGNAL ACTIVE // COVERAGE UNVERIFIED"
+                        reason = reason
                     )
                     isBlackedOut = true
                 } else {
-                    // Default / no opt-out signal and 0 faces: normal unmasked frame
+                    // Default / no opt-out signal ever observed and 0 faces: normal unmasked frame
                 }
 
                 // Send the masked frame to the hardware video encoder
@@ -251,6 +265,7 @@ class PrivacyExportCoordinator(
      */
     @Synchronized
     fun cancelRecording() {
+        hasObservedOptOutInSession = false
         activeEncoder?.cleanup()
         activeEncoder = null
         currentVideoFile?.delete()

@@ -397,4 +397,61 @@ class FailClosedAdversarialRegressionTest {
         assertFalse("Corrupt finalization must never produce Valid verification", verification is com.bluright.app.crypto.ManifestVerificationResult.Valid)
         assertTrue("Must detect video digest mismatch", verification is com.bluright.app.crypto.ManifestVerificationResult.VideoHashMismatch)
     }
+
+    @Test
+    fun testSessionStickyOptOut_afterSignalLossHoldExpiration_preservesFailClosedBlackout() {
+        val obs = BleObservation(
+            token = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 1, 2, 3, 4, 5, 6),
+            rssi = -48,
+            timestampMs = 1000L
+        )
+
+        // Frame 0: Opt-out active at t=1000ms
+        val state1 = BleScannerState.Scanning(listOf(obs))
+        val dec1 = associationEngine.evaluatePrivacyDecision(emptyList(), state1, currentTimeMs = 1000L)
+        assertTrue("Initial decision has active opt-out", dec1.isOptOutActive)
+
+        receiptCollector.recordFrame(
+            frameIndex = 0,
+            timestampMs = 1000L,
+            faces = emptyList(),
+            maskedFacesCount = 0,
+            decision = dec1,
+            isBlackedOut = true
+        )
+
+        // Signal drops completely at t=1500ms
+        val stateEmpty = BleScannerState.Scanning(emptyList())
+
+        // Frame 1: At t=4000ms (within 6000ms hold) -> in OptOutSignalHold
+        val dec2 = associationEngine.evaluatePrivacyDecision(emptyList(), stateEmpty, currentTimeMs = 4000L)
+        assertTrue(dec2 is PrivacyDecision.OptOutSignalHold)
+        receiptCollector.recordFrame(
+            frameIndex = 1,
+            timestampMs = 4000L,
+            faces = emptyList(),
+            maskedFacesCount = 0,
+            decision = dec2,
+            isBlackedOut = true
+        )
+
+        // Frame 2: At t=9000ms (8 seconds after loss, exceeding 6000ms hold window)
+        // AssociationEngine returns NoOptOutSignal
+        val dec3 = associationEngine.evaluatePrivacyDecision(emptyList(), stateEmpty, currentTimeMs = 9000L)
+        assertTrue("Hold expired at BLE level", dec3 is PrivacyDecision.NoOptOutSignal)
+
+        // Under session sticky policy, fail-closed blackout is maintained so unmaskedFramesCount remains 0
+        receiptCollector.recordFrame(
+            frameIndex = 2,
+            timestampMs = 9000L,
+            faces = emptyList(),
+            maskedFacesCount = 0,
+            decision = dec3,
+            isBlackedOut = true
+        )
+
+        assertEquals(3, receiptCollector.getTotalFrames())
+        assertEquals(3, receiptCollector.getBlackedOutFramesCount())
+        assertEquals(0, receiptCollector.getUnmaskedFramesCount())
+    }
 }

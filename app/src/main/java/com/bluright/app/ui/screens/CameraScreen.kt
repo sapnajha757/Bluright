@@ -214,7 +214,7 @@ fun CameraScreen(
             }
 
             // Stream frames from analyzer to Privacy Video Export Coordinator
-            LaunchedEffect(analyzer, bleScannerState, blurStyle) {
+            LaunchedEffect(analyzer) {
                 analyzer.onFrameAvailable = { bitmap, detectedFaces ->
                     if (exportCoordinator.isRecording) {
                         val frameDecision = associationEngine.evaluatePrivacyDecision(detectedFaces, bleScanner.scannerState.value)
