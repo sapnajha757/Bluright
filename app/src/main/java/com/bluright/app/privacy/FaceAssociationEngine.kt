@@ -17,6 +17,7 @@ import com.bluright.app.model.DetectedFace
  * CONSERVATIVE PRIVACY PROTOCOL:
  * Whenever an opt-out signal cannot be associated with 100% certainty with a specific face,
  * Bluright falls back to conservative masking: ALL visible faces are masked.
+ * Under OPT_OUT_ONLY policy, faces are NOT masked when no opt-out beacon is detected or active.
  */
 class FaceAssociationEngine(
     private val signalLossHoldDurationMs: Long = DEFAULT_SIGNAL_LOSS_HOLD_MS
@@ -27,10 +28,21 @@ class FaceAssociationEngine(
     @Volatile
     private var lastObservedTokenHex: String? = null
 
+    /**
+     * Explicitly clears any previous session's opt-out hold state and release criteria.
+     */
     @Synchronized
     fun resetHoldState() {
         lastOptOutObservedTimeMs = 0L
         lastObservedTokenHex = null
+    }
+
+    /**
+     * Explicit lifecycle release for a session reset.
+     */
+    @Synchronized
+    fun resetSession() {
+        resetHoldState()
     }
 
     /**
@@ -60,12 +72,28 @@ class FaceAssociationEngine(
                 )
             }
             is BleScannerState.PermissionDenied -> {
+                val elapsedSinceLoss = currentTimeMs - lastOptOutObservedTimeMs
+                if (lastOptOutObservedTimeMs > 0L && elapsedSinceLoss < signalLossHoldDurationMs) {
+                    return PrivacyDecision.OptOutSignalHold(
+                        elapsedSinceLossMs = elapsedSinceLoss,
+                        lastObservedTokenHex = lastObservedTokenHex,
+                        visibleFacesCount = faces.size
+                    )
+                }
                 return PrivacyDecision.BleUnavailable(
                     reason = "Nearby device permissions not granted",
                     visibleFacesCount = faces.size
                 )
             }
             is BleScannerState.Error -> {
+                val elapsedSinceLoss = currentTimeMs - lastOptOutObservedTimeMs
+                if (lastOptOutObservedTimeMs > 0L && elapsedSinceLoss < signalLossHoldDurationMs) {
+                    return PrivacyDecision.OptOutSignalHold(
+                        elapsedSinceLossMs = elapsedSinceLoss,
+                        lastObservedTokenHex = lastObservedTokenHex,
+                        visibleFacesCount = faces.size
+                    )
+                }
                 return PrivacyDecision.BleUnavailable(
                     reason = scannerState.message,
                     visibleFacesCount = faces.size

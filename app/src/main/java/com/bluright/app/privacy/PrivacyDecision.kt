@@ -1,12 +1,15 @@
 package com.bluright.app.privacy
 
 import com.bluright.app.ble.BleObservation
+import com.bluright.app.model.DetectedFace
 
 /**
  * Result of the privacy evaluation engine combining real-time camera face detections
  * and observed BLE opt-out signals.
  *
- * IMPORTANT PRIVACY ARCHITECTURE PRINCIPLE:
+ * IMPORTANT PRIVACY ARCHITECTURE PRINCIPLE (OPT_OUT_ONLY):
+ * Faces are ONLY masked when an opt-out beacon is present or an active protection hold applies.
+ * Face detection alone never triggers masking.
  * Radio frequency RSSI cannot reliably determine physical identity or line-of-sight.
  * Whenever association between an opt-out signal and a visible face is ambiguous,
  * Bluright applies a CONSERVATIVE FAIL-SAFE: all visible faces are masked rather than
@@ -16,7 +19,7 @@ sealed interface PrivacyDecision {
 
     /**
      * No compatible BLE opt-out beacons detected in the vicinity.
-     * All camera faces are processed under standard camera privacy rules.
+     * In the absence of an opt-out signal, detected faces are not masked.
      */
     data class NoOptOutSignal(
         val visibleFacesCount: Int
@@ -59,7 +62,7 @@ sealed interface PrivacyDecision {
 
     /**
      * Bluetooth is disabled, permissions are missing, or hardware BLE is unsupported.
-     * Face masking pipeline remains fully active and safe.
+     * When no opt-out was observed in the session, camera operates without masking.
      */
     data class BleUnavailable(
         val reason: String,
@@ -82,15 +85,20 @@ sealed interface PrivacyDecision {
 
     /**
      * Whether all visible faces must be blurred under this decision.
+     * Under OPT_OUT_ONLY policy:
+     * - Only ambiguous / uncertain association (AmbiguousConservativeMask) or conservative hold
+     *   (OptOutSignalHold) mandates blanket masking of all visible faces.
+     * - In the absence of an opt-out signal (NoOptOutSignal, BleUnavailable), detection alone never triggers blanket masking.
+     * - In AssociationSupported, only the associated face is masked.
      */
     val requiresMaskingAllFaces: Boolean
         get() = when (this) {
             is AmbiguousConservativeMask -> true
-            is NoOptOutSignal -> true // By default Bluright masks all detected faces
-            is OptOutDetectedUnverified -> true
-            is AssociationSupported -> true
             is OptOutSignalHold -> true
-            is BleUnavailable -> true
+            is NoOptOutSignal -> false
+            is OptOutDetectedUnverified -> false
+            is AssociationSupported -> false
+            is BleUnavailable -> false
         }
 
     /**
@@ -116,4 +124,11 @@ sealed interface PrivacyDecision {
             is AmbiguousConservativeMask -> true
             else -> false
         }
+
+    /**
+     * Determines whether a specific detected face must be masked under this privacy decision.
+     * Delegates to [PrivacyPolicy.shouldMaskFace].
+     */
+    fun shouldMaskFace(face: DetectedFace, hasObservedOptOutInSession: Boolean = false): Boolean =
+        PrivacyPolicy.shouldMaskFace(face, this, hasObservedOptOutInSession)
 }

@@ -118,6 +118,7 @@ data class DetectedFace(
      */
     fun lerpWith(previous: DetectedFace, alpha: Float = 0.35f): DetectedFace {
         return copy(
+            id = previous.id,
             normLeft = previous.normLeft + (this.normLeft - previous.normLeft) * alpha,
             normTop = previous.normTop + (this.normTop - previous.normTop) * alpha,
             normRight = previous.normRight + (this.normRight - previous.normRight) * alpha,

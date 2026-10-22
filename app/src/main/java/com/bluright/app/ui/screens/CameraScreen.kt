@@ -53,6 +53,7 @@ import com.bluright.app.model.BlurStyle
 import com.bluright.app.model.CameraLens
 import com.bluright.app.model.DetectionState
 import com.bluright.app.privacy.FaceAssociationEngine
+import com.bluright.app.privacy.PrivacyPolicy
 import com.bluright.app.ui.components.CameraControls
 import com.bluright.app.ui.components.ExportSuccessDialog
 import com.bluright.app.ui.components.FaceBlurOverlay
@@ -90,6 +91,7 @@ fun CameraScreen(
     val bleScannerState by bleScanner.scannerState.collectAsState()
     val bleAdvertiserState by bleAdvertiser.advertiserState.collectAsState()
     val exportState by exportCoordinator.exportState.collectAsState()
+    val hasObservedOptOutInSession by exportCoordinator.hasObservedOptOutInSession.collectAsState()
 
     // Start/Stop BLE Scanner with screen lifecycle and auto-resume on ON_RESUME
     DisposableEffect(lifecycleOwner) {
@@ -228,11 +230,16 @@ fun CameraScreen(
                 }
             }
 
+            val isRecording = exportState is ExportState.Recording
+            val isSessionStickyActive = isRecording && (hasObservedOptOutInSession || privacyDecision.isOptOutActive)
+
             FaceBlurOverlay(
                 faces = faces,
                 frameAspectRatio = frameAspectRatio,
                 blurStyle = blurStyle,
-                isFailClosedBlackoutActive = privacyDecision.shouldApplyFailClosedBlackoutIfNoFaces,
+                isFailClosedBlackoutActive = PrivacyPolicy.shouldApplyFailClosedBlackout(privacyDecision, isSessionStickyActive),
+                decision = privacyDecision,
+                hasObservedOptOutInSession = isSessionStickyActive,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -275,7 +282,6 @@ fun CameraScreen(
             }
 
             // 5. Bottom Controls Bar
-            val isRecording = exportState is ExportState.Recording
             val recordingDurationMs = (exportState as? ExportState.Recording)?.durationMs ?: 0L
 
             CameraControls(
@@ -291,14 +297,14 @@ fun CameraScreen(
                     if (isRecording) {
                         exportCoordinator.stopRecording()
                     } else {
-                        exportCoordinator.startRecording(blurStyle)
+                        exportCoordinator.startRecording(blurStyle, isOptOutCurrentlyActive = privacyDecision.isOptOutActive)
                     }
                 },
                 onToggleRecording = {
                     if (isRecording) {
                         exportCoordinator.stopRecording()
                     } else {
-                        exportCoordinator.startRecording(blurStyle)
+                        exportCoordinator.startRecording(blurStyle, isOptOutCurrentlyActive = privacyDecision.isOptOutActive)
                     }
                 },
                 modifier = Modifier.align(Alignment.BottomCenter)
