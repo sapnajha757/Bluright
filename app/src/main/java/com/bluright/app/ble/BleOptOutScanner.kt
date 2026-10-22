@@ -61,6 +61,7 @@ class BleOptOutScanner(
                     }
                     BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                         Log.w(TAG, "Bluetooth state is OFF -> pausing BLE scan")
+                        activeObservations.clear()
                         _scannerState.value = BleScannerState.BluetoothDisabled
                     }
                 }
@@ -270,6 +271,17 @@ class BleOptOutScanner(
             .sortedByDescending { it.rssi }
             .toList()
         _scannerState.value = BleScannerState.Scanning(sortedList)
+    }
+
+    /**
+     * Clears all cached observations immediately and emits an empty scan result.
+     * Used when the opt-out transmitter is toggled off or during session reset.
+     */
+    fun clearObservations() {
+        activeObservations.clear()
+        if (_scannerState.value is BleScannerState.Scanning) {
+            emitActiveObservations()
+        }
     }
 
     /**

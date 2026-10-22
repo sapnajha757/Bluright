@@ -25,7 +25,7 @@ object BleOptOutConstants {
     const val TOKEN_ROTATION_INTERVAL_MS = 15 * 60 * 1000L
 
     /** Maximum age of a received BLE observation before it is pruned as stale */
-    const val OBSERVATION_STALE_TIMEOUT_MS = 6000L
+    const val OBSERVATION_STALE_TIMEOUT_MS = 2500L
 
     /** RSSI Proximity Thresholds (dBm) for approximate relative distance estimation */
     const val RSSI_IMMEDIATE_THRESHOLD = -60 // Strongest signal, roughly <= 1.5 meters
